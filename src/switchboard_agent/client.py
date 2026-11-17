@@ -20,7 +20,8 @@ import urllib.error
 import urllib.request
 
 from . import __version__
-from . import crypto1, profiles
+from . import crypto1, files as files_mod, profiles
+from .files import FileError
 from .profiles import ProfileError
 
 DEFAULT_HOST = "https://switchboard.pioneerdigital.org"
@@ -101,16 +102,18 @@ class SwitchboardError(Exception):
         self.data = data or {}
 
 
-def api(host, method, path, body=None, token=None, timeout=40):
+def api(host, method, path, body=None, token=None, timeout=40, raw=None, raw_out=False):
+    """JSON call to the relay. raw: send these bytes as the body instead of JSON; raw_out: return the body bytes."""
     req = urllib.request.Request(host + path, method=method,
-                                 data=json.dumps(body).encode() if body is not None else None)
+                                 data=raw if raw is not None else json.dumps(body).encode() if body is not None else None)
     req.add_header("User-Agent", "switchboard-agent/" + __version__)
-    req.add_header("Content-Type", "application/json")
+    req.add_header("Content-Type", "application/octet-stream" if raw is not None else "application/json")
     if token:
         req.add_header("Authorization", "Bearer " + token)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read() or b"{}")
+            data = r.read()
+            return data if raw_out else json.loads(data or b"{}")
     except urllib.error.HTTPError as e:
         try:
             d = json.loads(e.read())
@@ -203,6 +206,8 @@ def join_lines(r, inbox=None, as_hint=True):
                          % (len(sent), "" if len(sent) == 1 else "s", ", ".join(clean(n) for n in sent), inbox))
         for x in failed:
             lines.append("Couldn't say hi to %s: %s" % (clean(x["to"]), x["status"][len("not sent: "):]))
+    if r.get("approved", True):
+        lines.append('Message an agent: %s send NAME "text". Send files: %s send NAME --file PATH.' % (cmd_prefix(), cmd_prefix()))
     if r.get("several") and as_hint:
         lines.append('Several agents share this computer. Add --as "%s" to this agent\'s commands.' % r["as"])
     return lines
@@ -211,7 +216,7 @@ def join_lines(r, inbox=None, as_hint=True):
 def peer_line(agent, p):
     bad = agent.peer_problem(p)
     return "- %s: %s%s%s" % (clean(p["name"]), "online" if p.get("online") else "offline",
-                             "" if p.get("answers_own") is not False else ", doesn't answer questions automatically",
+                             "" if p.get("answers_own") is not False else ", doesn't answer questions automatically",  # 0.6 servers
                              " (%s)" % bad if bad else "")
 
 
@@ -238,9 +243,9 @@ class Agent:
             self.ensure_v1()
 
     # ---- plumbing ----
-    def _api(self, method, path, body=None, timeout=40):
+    def _api(self, method, path, body=None, timeout=40, **kw):
         try:
-            return api(self.c["host"], method, path, body, token=self.c["token"], timeout=timeout)
+            return api(self.c["host"], method, path, body, token=self.c["token"], timeout=timeout, **kw)
         except SwitchboardError as e:
             if e.code == "removed_by_owner":
                 profiles.delete(self.c["slug"])
@@ -291,7 +296,22 @@ class Agent:
         out = {"name": self.c["name"], "id": self.c["id"], "owner": self.c.get("owner"),
                "fingerprint": _fp(self.c["pub1"]), "host": self.c["host"], "slug": self.c["slug"]}
         out.update(self._api("GET", "/api/agent/me").get("agent", {}))
+        self._sync_name(out.get("name"))
         return out
+
+    def _sync_name(self, name):
+        """The owner renamed this agent on the dashboard: use the new name here too (--as the old one still works)."""
+        if not isinstance(name, str) or not name or name == self.c.get("name"):
+            return
+        with profiles.locked(self.c["slug"]):
+            try:
+                c = profiles.load(self.c["slug"])
+            except ProfileError:
+                return
+            c.setdefault("asked_name", c.get("name"))
+            c["name"] = clean(name, 32)
+            profiles.save(c)
+        self.c["name"] = clean(name, 32)
 
     def _all_peers(self):
         ps = self._api("GET", "/api/agent/peers")["agents"]
@@ -369,6 +389,95 @@ class Agent:
         r = self._api("POST", "/api/agent/send_group", {"group": gid, "items": items})
         st = {x["to"]: x["status"] for x in r.get("results", [])}
         return {"group": gid, "results": [{"to": m["name"], "status": st.get(m["id"], "sent")} for m in uniq]}
+
+    # ---- files (0.7) ----
+    def send_files(self, name, paths, note=""):
+        """Send one or more local files (each up to 25 MB) to another agent, end-to-end encrypted, with an optional note."""
+        paths = [p for p in (paths or []) if p]
+        if not paths:
+            raise SwitchboardError("Say which file to send.")
+        if len(paths) > files_mod.MAX_FILES:
+            raise SwitchboardError("Send at most %d files at a time." % files_mod.MAX_FILES)
+        try:
+            info = [files_mod.read_upload(x) for x in paths]  # check them all before uploading any
+        except FileError as e:
+            raise SwitchboardError(str(e), "file_too_big" if "up to" in str(e) else "no_file")
+        p = self.find(name)
+        self._peer_key(p, "send to")
+        manifest = []
+        for path, (fname, size) in zip(paths, info):
+            try:
+                r = self._api("POST", "/api/agent/file/new", {"to": p["id"], "name": fname, "size": size})
+            except SwitchboardError as e:
+                if e.data.get("http") == 404 and str(e) == "not found":
+                    raise SwitchboardError("This Switchboard server doesn't support files yet.", "old_server")
+                raise
+            fid, n = r["id"], r["n"]
+            if n != files_mod.parts(size) or r.get("chunk", files_mod.CHUNK) != files_mod.CHUNK:
+                raise SwitchboardError("The server proposed an unexpected file layout; nothing was sent.")
+            key = files_mod.new_key()
+            put = lambda i, data, fid=fid: self._api("PUT", "/api/agent/file/chunk?id=%s&i=%d" % (fid, i), raw=data, timeout=120)
+            try:
+                sha, size2 = files_mod.upload(put, path, fid, n, key)
+            except FileError as e:
+                raise SwitchboardError(str(e))
+            manifest.append({"id": fid, "name": fname, "size": size2, "n": n, "chunk": files_mod.CHUNK,
+                             "sha256": sha, "key": base64.b64encode(key).decode()})
+        blob = self._seal(p, {"type": "file", "text": str(note or ""), "files": manifest})
+        r = self._api("POST", "/api/agent/file/send", {"to": p["id"], "files": [f["id"] for f in manifest], "blob": blob})
+        return {"to": p["name"], "status": r.get("status", "sent"), "files": [{"name": f["name"], "size": f["size"]} for f in manifest]}
+
+    def _receive_files(self, item, o, p):
+        """A file message: record the manifest locally (durable), then download and save each file."""
+        try:
+            fs = files_mod.check_manifest(o.get("files"))
+        except FileError as e:
+            item.update(type="unreadable", note="bad file message (%s)" % e)
+            return
+        item["files"] = []
+        for f in fs:
+            rec = dict(f, **{"from": p["name"], "from_id": p["id"], "ts": time.time(), "status": "pending"})
+            old = profiles.files_load(self.c["slug"]).get(f["id"])
+            if old and old.get("status") == "saved":
+                item["files"].append({"name": clean(f["name"], 120), "size": f["size"], "path": old.get("path")})
+                continue
+            profiles.files_put(self.c["slug"], f["id"], rec)
+            item["files"].append(self._save_file(rec))
+
+    def _save_file(self, rec):
+        """Download one recorded file. Returns {name, size, path} or {name, size, error}."""
+        slug = self.c["slug"]
+        folder = os.path.expanduser(getattr(self, "save_to", None) or profiles.files_dir(slug))
+        out = {"name": clean(rec.get("name"), 120), "size": rec.get("size"), "from": clean(rec.get("from"))}
+        get = lambda i: self._api("GET", "/api/agent/file/chunk?id=%s&i=%d" % (rec["id"], i), raw_out=True, timeout=120)
+        try:
+            path = files_mod.download(get, rec, folder)
+        except (FileError, SwitchboardError, OSError) as e:
+            if isinstance(e, SwitchboardError) and e.code in ("removed_by_owner", "invalid_token"):
+                raise
+            gone = isinstance(e, SwitchboardError) and e.code == "file_gone"
+            msg = str(e) if not isinstance(e, OSError) else "couldn't write it to %s (%s)" % (folder, e.strerror or e)
+            profiles.files_put(slug, rec["id"], {"status": "gone" if gone else "failed", "error": clean(msg, 200),
+                                                  **({"key": None} if gone else {})})
+            return dict(out, error=clean(msg, 200))
+        profiles.files_put(slug, rec["id"], {"status": "saved", "path": path, "key": None, "saved": time.time()})
+        try:
+            self._api("POST", "/api/agent/file/done", {"id": rec["id"]}, timeout=20)
+        except SwitchboardError as e:
+            if e.code in ("removed_by_owner", "invalid_token"):
+                raise  # otherwise the relay's copy just expires on its own
+        return dict(out, path=path)
+
+    def files(self, retry=True):
+        """Files other agents sent this agent, newest first; retries any that weren't saved yet."""
+        d = profiles.files_load(self.c["slug"])
+        if retry:
+            for fid, rec in list(d.items()):
+                if rec.get("status") in ("pending", "failed") and rec.get("key"):
+                    self._save_file(dict(rec, id=fid))
+            d = profiles.files_load(self.c["slug"])
+        return sorted(({"id": k, **{x: v.get(x) for x in ("name", "size", "from", "ts", "status", "path", "error")}}
+                       for k, v in d.items()), key=lambda r: -(r.get("ts") or 0))
 
     def ping(self, name=None):
         targets = self.peers() if not name else [self.find(name)]
@@ -472,6 +581,7 @@ class Agent:
         r = self._api("GET", "/api/agent/poll?wait=%d&lease=1" % wait, timeout=wait + 20)
         me = r.get("self") if isinstance(r.get("self"), dict) else {}
         self.answers_own = me.get("answers_own") is not False  # servers before 0.6 have no switch: on
+        self._sync_name(me.get("name"))
         msgs = r.get("messages")
         msgs = [m for m in msgs if isinstance(m, dict)] if isinstance(msgs, list) else []
         if not msgs:
@@ -531,6 +641,8 @@ class Agent:
             item["also_to"] = [clean(by_id[i]["name"]) if i in by_id else "an agent no longer on the network"
                                for i in ids if i not in (self.c["id"], p["id"])]
         item["from_id"] = p["id"]
+        if item["type"] == "file":
+            self._receive_files(item, o, p)
         if item["type"] in ("ask", "answer"):
             self._question_fields(item, o, p)
         if item["type"] == "ping":
@@ -596,7 +708,7 @@ class Agent:
         out = {"to": p["name"], "qid": qid, "text": None}
         if p.get("answers_own") is False:
             return dict(out, status="off")
-        if not p.get("listening", p.get("online")):  # nothing is reading its mailbox right now
+        if not p.get("listening", p.get("online")) and not p.get("wakes"):  # nothing will read its mailbox soon
             return dict(out, status="asleep")
         if wait <= 0:
             return dict(out, status="sent")

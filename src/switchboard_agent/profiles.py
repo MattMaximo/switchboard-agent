@@ -8,6 +8,8 @@
         agents/<slug>.held          messages read by `listen` or `ask` but not shown yet; the next inbox shows them
         agents/<slug>.asks          questions other agents asked this agent (question id -> who asked)
         agents/<slug>.asked         questions this agent asked (question id -> whom)
+        agents/<slug>.files         files other agents sent this agent (file id -> manifest, where it was saved)
+        files/<slug>/               where received files are saved by default
         agent.json                  legacy single-agent file (<= 0.3.x); migrated automatically
 
 Joining again under the same name on the same network replaces that agent's old, dead profile
@@ -174,7 +176,7 @@ def delete(slug):
         gone_id = _read_json(path_for(slug), {}).get("id")
     except ProfileError:
         gone_id = None
-    for ext in (".json", ".seen", ".pins", ".a2a", ".held", ".asks", ".asked"):
+    for ext in (".json", ".seen", ".pins", ".a2a", ".held", ".asks", ".asked", ".files"):
         try:
             os.remove(os.path.join(agents_dir(), slug + ext))
         except FileNotFoundError:
@@ -376,6 +378,31 @@ def q_put(slug, kind, qid, rec, only_new=False):
             d = dict(sorted(d.items(), key=lambda kv: kv[1].get("ts", 0))[-ASKS_MAX:])
         write_json(_qpath(slug, kind), d)
         return True
+
+
+# --- files received (0.7): manifest (with its key) until saved, then where it was saved ---
+FILES_MAX = 500
+
+
+def files_dir(slug):
+    return os.path.join(home(), "files", slug)
+
+
+def _files_path(slug):
+    return os.path.join(agents_dir(), slug + ".files")
+
+
+def files_load(slug):
+    return _read_json(_files_path(slug), {})
+
+
+def files_put(slug, fid, rec):
+    with locked(slug + ".files"):
+        d = _read_json(_files_path(slug), {})
+        d[fid] = dict(d.get(fid) or {}, **rec)
+        if len(d) > FILES_MAX:
+            d = dict(sorted(d.items(), key=lambda kv: kv[1].get("ts", 0))[-FILES_MAX:])
+        write_json(_files_path(slug), d)
 
 
 # --- questions a running `listen --answer-with` has taken on but not answered yet (survive a crash) ---

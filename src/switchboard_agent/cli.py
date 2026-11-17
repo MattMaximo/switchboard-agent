@@ -7,7 +7,7 @@ from . import __version__
 from . import a2a as a2a_mod
 from .client import ASK_WAIT, Agent, SwitchboardError, ask_lines, clean, inbox_cmd, join, join_lines, peer_line, ping_line
 from .listen import ANSWER_TIMEOUT, Listener
-from .mcp import _fmt_inbox, serve
+from .mcp import _fmt_inbox, files_lines, sent_files_line, serve
 from .profiles import all_profiles
 
 
@@ -54,14 +54,20 @@ def main(argv=None):
     p.add_argument("name", nargs="?")
     p.add_argument("--all", action="store_true")
     _as(p)
-    s = sp.add_parser("send", help='send a message: send NAME "text", or send --to A,B "text", or send --all "text"')
+    s = sp.add_parser("send", help='send a message: send NAME "text", send NAME --file PATH ["note"], '
+                                   'send --to A,B "text", or send --all "text"')
     s.add_argument("args", nargs="+", metavar="NAME TEXT")
+    s.add_argument("--file", action="append", metavar="PATH", help="send a file (up to 25 MB, end-to-end encrypted); repeat for several")
     s.add_argument("--to", help="comma-separated names for a group message")
     s.add_argument("--all", action="store_true", help="group message to every other agent")
     _as(s)
-    i = sp.add_parser("inbox", help="read new messages")
+    i = sp.add_parser("inbox", help="read new messages (files are saved to ~/.switchboard/files/<agent>/)")
     i.add_argument("--wait", type=int, default=0)
+    i.add_argument("--save-to", metavar="DIR", help="save received files here instead")
     _as(i)
+    fl = sp.add_parser("files", help="list files other agents sent you (and retry any not saved yet)")
+    fl.add_argument("--save-to", metavar="DIR", help="save files not saved yet here")
+    _as(fl)
     l = sp.add_parser("listen", help="stay online, answer pings and (with --answer-with) your other agents' questions")
     l.add_argument("--minutes", type=float, default=0)
     l.add_argument("--answer-with", metavar="COMMAND",
@@ -101,7 +107,11 @@ def main(argv=None):
     _as(lv)
     m = sp.add_parser("mcp", help="run as a local MCP server (stdio)")
     _as(m)
-    a = ap.parse_args(argv)
+    a, extra = ap.parse_known_args(argv)
+    if extra and a.cmd == "send" and a.file and not any(x.startswith("-") for x in extra):
+        a.args += extra  # send NAME --file PATH "note": the note comes after the option
+    elif extra:
+        ap.error("unrecognized arguments: " + " ".join(extra))
     try:
         if a.cmd == "mcp":
             return serve(a.as_name)
@@ -152,7 +162,13 @@ def main(argv=None):
         elif a.cmd == "leave":
             print('"%s" left the network and its local keys were deleted. You can now uninstall.' % ag.leave())
         elif a.cmd == "send":
-            if a.to or a.all:
+            if a.file:
+                if a.to or a.all:
+                    ap.error("files go to one agent at a time: send NAME --file PATH")
+                if len(a.args) > 2:
+                    ap.error('send NAME --file PATH ["note"]')
+                print(sent_files_line(ag.send_files(a.args[0], a.file, a.args[1] if len(a.args) == 2 else "")))
+            elif a.to or a.all:
                 if len(a.args) != 1:
                     ap.error('group send takes one TEXT argument: send --to A,B "text"')
                 names = [n.strip() for n in (a.to or "").split(",") if n.strip()]
@@ -164,7 +180,11 @@ def main(argv=None):
                     ap.error('send needs NAME and TEXT: send NAME "text"')
                 r = ag.send(a.args[0], a.args[1])
                 print("sent to %s (%s)" % (r["to"], r["status"]))
+        elif a.cmd == "files":
+            ag.save_to = a.save_to
+            print("\n".join(files_lines(ag.files())))
         elif a.cmd == "inbox":
+            ag.save_to = a.save_to
             print(_fmt_inbox(ag.inbox(a.wait), 'switchboard answer %s "your answer"' + _as_flag(a)))
         elif a.cmd == "ask":
             print("\n".join(ask_lines(ag.ask(a.name, a.question, max(0, a.wait)), inbox_cmd(a.as_name))), flush=True)
