@@ -5,7 +5,8 @@ import time
 
 from . import __version__
 from . import a2a as a2a_mod
-from .client import Agent, SwitchboardError, clean, join, join_lines, ping_line
+from .client import ASK_WAIT, Agent, SwitchboardError, ask_lines, clean, inbox_cmd, join, join_lines, peer_line, ping_line
+from .listen import ANSWER_TIMEOUT, Listener
 from .mcp import _fmt_inbox, serve
 from .profiles import all_profiles
 
@@ -14,6 +15,24 @@ def _reply_line(t, r):
     if not r:
         return "no reply yet (state %s)" % t.get("status", {}).get("state")
     return "reply: %s%s" % (r["text"], "" if r["encrypted"] else "  (not end-to-end encrypted)")
+
+
+def _as_flag(a):
+    return ' --as "%s"' % a.as_name if getattr(a, "as_name", None) else ""
+
+
+def _listen_lines(items):
+    """One line per message for the listen log; the messages themselves are kept for the next inbox."""
+    out = []
+    for m in items:
+        t = m.get("type")
+        if t == "ping":
+            out.append("Ping from %s (answered)" % clean(m.get("from")))
+        elif t == "ask":
+            out.append("Question %s from %s: %s" % (clean(m.get("qid"), 30), clean(m.get("from")), clean(m.get("auto_reply") or "kept for inbox", 120)))
+        else:
+            out.append("Message from %s (%s), kept for the next inbox" % (clean(m.get("from")), clean(t, 12)))
+    return out
 
 
 def _as(sp):
@@ -43,9 +62,22 @@ def main(argv=None):
     i = sp.add_parser("inbox", help="read new messages")
     i.add_argument("--wait", type=int, default=0)
     _as(i)
-    l = sp.add_parser("listen", help="stay online and answer pings")
+    l = sp.add_parser("listen", help="stay online, answer pings and (with --answer-with) your other agents' questions")
     l.add_argument("--minutes", type=float, default=0)
+    l.add_argument("--answer-with", metavar="COMMAND",
+                   help='answer questions from your other agents by running COMMAND with the question on stdin '
+                        '(no shell), e.g. "hermes chat -Q --source tool --query-file -", "claude -p", "codex exec -"')
+    l.add_argument("--answer-timeout", type=int, default=ANSWER_TIMEOUT, metavar="SECONDS")
     _as(l)
+    k = sp.add_parser("ask", help='ask another of your agents a question and wait for the answer: ask NAME "question"')
+    k.add_argument("name")
+    k.add_argument("question")
+    k.add_argument("--wait", type=int, default=ASK_WAIT, help="seconds to wait for the answer (default %d)" % ASK_WAIT)
+    _as(k)
+    an = sp.add_parser("answer", help='answer a question from another of your agents: answer ID "text"')
+    an.add_argument("id")
+    an.add_argument("text")
+    _as(an)
     st = sp.add_parser("status", help="show this agent and its peers")
     _as(st)
     sp.add_parser("agents", help="list the agents set up on this computer")
@@ -105,9 +137,10 @@ def main(argv=None):
             x = me.get("a2a") or {}
             if x.get("on"):
                 print("A2A address: %s%s" % (x.get("url"), " (unencrypted messages allowed)" if x.get("plain") else ""))
+            if me.get("answers_own") is False:
+                print("Questions from your other agents: off (dashboard)")
             for p in ag.peers():
-                bad = ag.peer_problem(p)
-                print("- %s: %s%s" % (clean(p["name"]), "online" if p["online"] else "offline", " (%s)" % bad if bad else ""))
+                print(peer_line(ag, p))
         elif a.cmd == "ping":
             if not (a.name or a.all):
                 ap.error("ping needs a NAME or --all")
@@ -132,7 +165,12 @@ def main(argv=None):
                 r = ag.send(a.args[0], a.args[1])
                 print("sent to %s (%s)" % (r["to"], r["status"]))
         elif a.cmd == "inbox":
-            print(_fmt_inbox(ag.inbox(a.wait)))
+            print(_fmt_inbox(ag.inbox(a.wait), 'switchboard answer %s "your answer"' + _as_flag(a)))
+        elif a.cmd == "ask":
+            print("\n".join(ask_lines(ag.ask(a.name, a.question, max(0, a.wait)), inbox_cmd(a.as_name))), flush=True)
+        elif a.cmd == "answer":
+            r = ag.answer(a.id, a.text)
+            print("Answered %s's question (%s)." % (clean(r["to"]), r["status"]))
         elif a.cmd == "avatar":
             if not (a.path or a.clear):
                 ap.error("avatar needs an image PATH or --clear")
@@ -142,13 +180,17 @@ def main(argv=None):
             r = ag.reply(a.task, a.text)
             print("replied to task %s (%s)" % (r["task"], "end-to-end encrypted" if r["encrypted"] else "not end-to-end encrypted"))
         elif a.cmd == "listen":
-            print("%s is online. Listening (Ctrl-C to stop)..." % ag.c["name"], flush=True)
+            lis = Listener(ag, a.answer_with, a.answer_timeout)
+            print("%s is online. Listening%s (Ctrl-C to stop)..." % (
+                ag.c["name"], ", answering your other agents' questions with %s" % a.answer_with if a.answer_with else ""), flush=True)
             end = time.time() + a.minutes * 60 if a.minutes else None
             while end is None or time.time() < end:
                 try:
-                    items = ag.inbox(25)
+                    items = ag._fetch(25)
                     if items:
-                        print(_fmt_inbox(items), flush=True)
+                        lis.handle(items)
+                        for line in _listen_lines(items):
+                            print(line, flush=True)
                 except SwitchboardError as e:
                     if e.code in ("removed_by_owner", "key_conflict", "invalid_token") or str(e).startswith("This Switchboard server"):
                         raise

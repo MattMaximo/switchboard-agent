@@ -5,6 +5,9 @@
         agents/<slug>.seen          recent message ids (replay protection)
         agents/<slug>.pins          peer id -> v1 key, remembered the first time each peer is seen
         agents/<slug>.a2a           outside A2A messages this agent read (task id -> how to reply)
+        agents/<slug>.held          messages read by `listen` or `ask` but not shown yet; the next inbox shows them
+        agents/<slug>.asks          questions other agents asked this agent (question id -> who asked)
+        agents/<slug>.asked         questions this agent asked (question id -> whom)
         agent.json                  legacy single-agent file (<= 0.3.x); migrated automatically
 
 Joining again under the same name on the same network replaces that agent's old, dead profile
@@ -171,7 +174,7 @@ def delete(slug):
         gone_id = _read_json(path_for(slug), {}).get("id")
     except ProfileError:
         gone_id = None
-    for ext in (".json", ".seen", ".pins", ".a2a"):
+    for ext in (".json", ".seen", ".pins", ".a2a", ".held", ".asks", ".asked"):
         try:
             os.remove(os.path.join(agents_dir(), slug + ext))
         except FileNotFoundError:
@@ -314,3 +317,62 @@ def a2a_record(slug, recs):
         if len(d) > A2A_MAX:
             d = dict(sorted(d.items(), key=lambda kv: kv[1].get("ts", 0))[-A2A_MAX:])
         write_json(path, d)
+
+
+# --- messages read in the background (listen, ask) that the next inbox must still show ---
+HELD_MAX = 300
+
+
+def _held_path(slug):
+    return os.path.join(agents_dir(), slug + ".held")
+
+
+def held_add(slug, items):
+    if not items:
+        return
+    with locked(slug + ".held"):
+        d = _read_json(_held_path(slug), [])
+        d.extend(items)
+        write_json(_held_path(slug), d[-HELD_MAX:])
+
+
+def held_take(slug, pred=None):
+    """Remove and return held messages (all of them, or those pred() accepts)."""
+    with locked(slug + ".held"):
+        d = _read_json(_held_path(slug), [])
+        if not d:
+            return []
+        take = [x for x in d if pred is None or pred(x)]
+        if take:
+            rest = [x for x in d if not (pred is None or pred(x))]
+            if rest:
+                write_json(_held_path(slug), rest)
+            else:
+                os.remove(_held_path(slug))
+        return take
+
+
+# --- questions: received (.asks) and sent (.asked), keyed by question id ---
+ASKS_MAX = 500
+
+
+def _qpath(slug, kind):
+    return os.path.join(agents_dir(), slug + "." + kind)
+
+
+def q_load(slug, kind):
+    return _read_json(_qpath(slug, kind), {})
+
+
+def q_put(slug, kind, qid, rec, only_new=False):
+    """Store a question record. With only_new, an id already used by a different peer is refused."""
+    with locked(slug + "." + kind):
+        d = _read_json(_qpath(slug, kind), {})
+        old = d.get(qid)
+        if only_new and old and old.get("peer") != rec.get("peer"):
+            return False
+        d[qid] = dict(old or {}, **rec)
+        if len(d) > ASKS_MAX:
+            d = dict(sorted(d.items(), key=lambda kv: kv[1].get("ts", 0))[-ASKS_MAX:])
+        write_json(_qpath(slug, kind), d)
+        return True
