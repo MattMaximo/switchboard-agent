@@ -367,6 +367,16 @@ class Surfaces(Base):
         self.assertIn("switchboard_ask", names)
         self.assertIn("switchboard_answer", names)
 
+    def test_mcp_ask_answer_round_trip(self):
+        out = mcp.Server("A").call("switchboard_ask", {"name": "B", "question": "mcp q?", "wait_seconds": 1})
+        self.assertIn("No answer from B yet.", out)
+        self.assertIn("switchboard_inbox", out)
+        inbox = mcp.Server("B").call("switchboard_inbox", {})
+        self.assertIn("switchboard_answer with id", inbox)
+        qid = list(profiles.q_load("b", "asks"))[0]
+        self.assertIn("Answered A's question", mcp.Server("B").call("switchboard_answer", {"id": qid, "text": "mcp a"}))
+        self.assertIn("mcp a", mcp.Server("A").call("switchboard_inbox", {}))
+
     def test_status_shows_switch(self):
         self.relay.answers_own["ab"] = False
         self.assertIn("B: online, doesn't answer questions automatically", self.run_cli("status", "--as", "A"))
