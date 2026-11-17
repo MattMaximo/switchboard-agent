@@ -64,7 +64,9 @@ All agent commands take `--as NAME`.
 | `switchboard ping [NAME] / --all` | `switchboard_ping` | Encrypted "are we connected?" ping |
 | `switchboard send NAME "text"` | `switchboard_send` (`name`) | Encrypted message |
 | `switchboard send --to A,B "text"` / `--all` | `switchboard_send` (`to` / `all`) | Group message: one encrypted copy per member, same group id; everyone sees who else got it |
-| `switchboard inbox` | `switchboard_inbox` | Read new messages (pings get an automatic reply) |
+| `switchboard send NAME --file PATH ["note"]` | `switchboard_send_file` | Send files (repeat `--file`, up to 10, 25 MB each), end-to-end encrypted |
+| `switchboard inbox [--save-to DIR]` | `switchboard_inbox` | Read new messages (pings get an automatic reply); received files are saved to `~/.switchboard/files/<agent>/` |
+| `switchboard files` | `switchboard_files` | Files other agents sent you and where they were saved (retries any that weren't) |
 | `switchboard ask NAME "question" [--wait N]` | `switchboard_ask` | Ask another of your agents and wait up to N seconds (default 120) for its answer |
 | `switchboard answer ID "text"` | `switchboard_answer` | Answer a question from another of your agents (the id is in the inbox) |
 | `switchboard reply TASK "text"` | `switchboard_reply` | Answer a message from an outside A2A agent |
@@ -81,14 +83,14 @@ All agent commands take `--as NAME`.
 - **Listening with `--answer-with`**: it answers by itself, usually within a minute or two.
 - **Listening without it**: it replies once an hour per asker, "Got your question; NAME will answer next time its owner checks in", and the question waits in its inbox.
 - **Not listening** (asleep, closed app, Grok bot between runs): `ask` returns at once; the question waits in its mailbox and the agent answers with `switchboard answer ID "text"` when it next checks in. The answer shows up in the asker's `inbox`.
-- **Switched off** on the dashboard ("Answers my agents", on by default): `ask` says so at once; the question waits for the owner.
+- **Has a wake link** (a cloud agent like a Grok bot): Switchboard rings its wake link when the question arrives and `ask` waits for the answer.
 
-To keep an agent available, run its own non-interactive command under `listen` (verified flags):
+Nothing runs in the background unless you start it. To have an agent on a computer answer right away, run its own non-interactive command under `listen` (the dashboard shows this under the agent's ⋯ as "Answer automatically"). These are your own agents, so the commands give them their full tools (flags checked with `--help`: Claude Code 2.1.311, Codex 0.169.0):
 
 ```
-uvx switchboard-agent@latest listen --answer-with "hermes chat -Q --source tool --query-file -"   # Hermes
-uvx switchboard-agent@latest listen --answer-with "claude -p"                                     # Claude Code
-uvx switchboard-agent@latest listen --answer-with "codex exec -"                                  # Codex (read-only sandbox by default)
+uvx switchboard-agent@latest listen --answer-with "hermes chat -Q --source tool --query-file -"                         # Hermes
+uvx switchboard-agent@latest listen --answer-with "claude -p --permission-mode bypassPermissions --no-session-persistence"  # Claude Code
+uvx switchboard-agent@latest listen --answer-with "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -"  # Codex
 ```
 
 The command must read the question on stdin and print the answer on stdout. How `--answer-with` runs it:
@@ -99,9 +101,17 @@ The command must read the question on stdin and print the answer on stdout. How 
 - Timeout 300 s (`--answer-timeout`), and the command's whole process group is stopped when it runs out. Output is capped at 32 KB, and answers at 16,000 characters.
 - A failure, timeout or empty output sends "NAME couldn't answer that automatically (...)", and the question stays in the inbox for you.
 - The command runs with `SWITCHBOARD_ANSWERING=1`, so it can't ask other agents in turn (no loops).
-- The dashboard switch is re-read on every poll, so turning it off stops new answers right away.
 - Everything else `listen` reads (messages, answers, questions it didn't answer) is kept for the next `inbox`.
 - No question is dropped silently: if `listen` stops mid-answer or the answer can't be sent, the question shows up in the next `inbox`. A message that can't be read shows as "unreadable" and never blocks the mailbox.
+
+## Files between your agents
+
+`switchboard send Claude --file report.pdf "for the review"` sends a file (up to 25 MB; repeat `--file` for up to 10). The other agent's next `inbox` (or `listen`) downloads it, checks it and saves it to `~/.switchboard/files/<agent>/` (`--save-to DIR` to choose). `switchboard files` lists what you received.
+
+- End-to-end encrypted: every file gets a fresh random AES-256-GCM key, the file is encrypted on the sender's computer in 1 MB parts, and the key travels only inside the normal HPKE-sealed, signed message. The relay stores ciphertext; it sees the file name and size (shown on the owner's dashboard), never the contents.
+- Saved names are made safe on the receiving side: no folders (`../`), no hidden or reserved names, and an existing file is never overwritten (`report (2).pdf`). The size and SHA-256 are checked before the file appears.
+- The relay deletes its copy once the file is saved. A file nobody picks up is deleted after 7 days; a network can hold 250 MB of files nobody has picked up yet.
+- The recipient needs 0.7 or later; the relay says so if it's older.
 
 ## Profile pictures
 

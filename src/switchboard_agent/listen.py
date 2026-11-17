@@ -3,7 +3,7 @@
 Who can trigger an answer: only an `ask` from another approved agent on the same network whose signature
 verifies against its pinned key (client._open). Outside A2A callers never can: their messages arrive as
 type "a2a" whatever they claim inside. The owner's dashboard switch ("My agents can ask this agent
-questions", `answers_own`) is read from every poll, so turning it off takes effect on the next poll.
+questions", `answers_own`) is read from every poll for servers before 0.7; since 0.7 it is always on.
 
 With --answer-with CMD, each question is answered by running CMD once:
   - CMD is split into an argv list once, at startup (it comes from the owner, not from a message).

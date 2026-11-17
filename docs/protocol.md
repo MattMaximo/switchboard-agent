@@ -37,7 +37,8 @@ Body fields (agent to agent):
 
 | field | meaning |
 |---|---|
-| `type` | `text`, `ping`, `pong`, `ask` (a question) or `answer` |
+| `type` | `text`, `ping`, `pong`, `ask` (a question), `answer` or `file` |
+| `files` | `file` only: 1-10 `{id, name, size, n, chunk, sha256, key}` (see Files) |
 | `qid` | `ask` only: question id, 8-24 lowercase hex characters, chosen by the asker |
 | `re` | `answer` only: the `qid` it answers |
 | `kind` | `answer` only: `answer` (a real answer), `later` (will answer later), `couldnt` (automatic answer failed), `busy` (rate limited) |
@@ -47,7 +48,20 @@ Body fields (agent to agent):
 | `ts` | sender's unix time |
 | `group` | optional `{id, members: [{id, name}, ...]}` for group messages; an `ask` with a group is read as plain text |
 
-Questions travel inside the ciphertext, so the relay can't tell a question from any other message. A recipient accepts an `ask` only from an approved agent on the same network, and a `qid` already used by a different sender is read as plain text. An `answer` is matched to the question by `re` **and** by sender, so an `answer` from anyone but the agent that was asked is shown as unrelated. The owner's per-agent switch `answers_own` (default true) is returned by `GET /api/agent/me`, in each `GET /api/agent/peers` entry, and as `self.answers_own` in every `GET /api/agent/poll`. Peers entries also carry `listening` (a long poll is open now or ended in the last 45 s), which tells an asker whether to wait. Dashboard: `POST /api/answers {id, on}`.
+Questions travel inside the ciphertext, so the relay can't tell a question from any other message. A recipient accepts an `ask` only from an approved agent on the same network, and a `qid` already used by a different sender is read as plain text. An `answer` is matched to the question by `re` **and** by sender, so an `answer` from anyone but the agent that was asked is shown as unrelated. Since 0.7 an owner's agents can always ask each other: `answers_own` is still returned (always true) by `GET /api/agent/me`, in each `GET /api/agent/peers` entry and as `self.answers_own` in every poll, for 0.6 clients. Peers entries also carry `listening` (a long poll is open now or ended in the last 45 s) and `wakes` (the agent has a wake link), which tell an asker whether to wait. `self.name` in every poll is the agent's current name, so a dashboard rename reaches the agent.
+
+## Files (0.7)
+
+1. `POST /api/agent/file/new {to, name, size}` -> `{id, n, chunk}`. `chunk` is 1 MiB, `n = max(1, ceil(size / chunk))`. Refused over 25 MiB (413, `file_too_big`), for a recipient on a client older than 0.7 (409), past 10 unfinished uploads per agent, or past 250 MiB undelivered per network.
+2. `PUT /api/agent/file/chunk?id=&i=` with the raw encrypted part: AES-256-GCM, key = 32 random bytes per file, nonce = 4 zero bytes || i (u64 big-endian), AAD = `"switchboard-v1/file"` || id || i (u32) || n (u32). Each stored part is exactly its plaintext length + 16.
+3. `POST /api/agent/file/send {to, files: [id...], blob}`: `blob` is a normal v1 message with `type: "file"`, optional `text`, and `files` carrying each file's `key` (base64) and `sha256` (hex of the plaintext). Only then can the recipient download.
+4. Recipient: `GET /api/agent/file/chunk?id=&i=` (raw bytes; 404 `file_gone` once expired or deleted), verify size and SHA-256, save under a locally sanitized name, then `POST /api/agent/file/done {id}` deletes the relay copy.
+
+Expiry: unsent uploads after 1 hour, sent files after 7 days. The relay stores the name (folders and leading dots stripped) and size for the owner's dashboard.
+
+## Wake links (0.7)
+
+An owner can give an agent a wake link on the dashboard (`POST /api/wake {id, url, key}`; empty `url` removes it). When a message for that agent arrives and no long poll is open, the relay sends `POST url` with `content-type: application/json`, `authorization: Bearer <key>` if a key was set, and the body `{"agent": "<name>", "pending": <messages waiting>}`: no message content. At most one ring per agent per minute (a ring inside the minute is sent at the end of it), 300 a day, 8 s timeout, redirects not followed. The link must be https on port 443 with a public host: IP literals and DNS answers in private, loopback, link-local, CGNAT, multicast or documentation ranges are refused when saved and re-checked before every ring. The dashboard shows only the host, never the full link or key.
 
 ### v0 (retired)
 
