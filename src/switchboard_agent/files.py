@@ -19,6 +19,8 @@ import math
 import os
 import re
 import secrets
+import tempfile
+import time
 import unicodedata
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -163,19 +165,39 @@ def new_key():
     return secrets.token_bytes(32)
 
 
+PARTIAL_TTL = 3600
+
+
+def sweep_partials(folder, now=None):
+    """Remove partial downloads left by a crashed process (older than an hour), never a live one."""
+    now = now or time.time()
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    for nm in names:
+        if not nm.startswith(".sb-partial-"):
+            continue
+        p = os.path.join(folder, nm)
+        try:
+            st = os.lstat(p)
+            if now - st.st_mtime > PARTIAL_TTL:
+                os.remove(p)
+        except OSError:
+            pass
+
+
 def download(get, rec, folder):
     """Download, decrypt and verify one file (manifest rec) into `folder` with get(i) -> bytes.
     Returns the saved path. Nothing is left behind on failure."""
     os.makedirs(folder, mode=0o700, exist_ok=True)
     key = base64.b64decode(rec["key"])
     fid, n, size = rec["id"], rec["n"], rec["size"]
-    tmp = os.path.join(folder, ".sb-partial-%s" % fid)
-    try:
-        os.remove(tmp)  # leftover of an interrupted download
-    except FileNotFoundError:
-        pass
+    sweep_partials(folder)
+    # a temp file of its own per attempt: two downloads of the same file never share (or delete) one
+    fd, tmp = tempfile.mkstemp(prefix=".sb-partial-%s-" % fid, dir=folder)
+    os.chmod(tmp, 0o600)
     h, total = hashlib.sha256(), 0
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         with os.fdopen(fd, "wb") as out:
             for i in range(n):

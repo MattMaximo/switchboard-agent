@@ -1,9 +1,12 @@
 """Files between an owner's agents (0.7): encrypted chunks, safe names, no overwrite, size cap, rename sync."""
+import base64
 import hashlib
 import io
 import json
 import os
 import sys
+import threading
+import time
 from unittest import mock
 
 from switchboard_agent import cli, client, files, mcp, profiles
@@ -188,6 +191,81 @@ class Files(Base):
         txt = mcp.Server("B").call("switchboard_inbox", {})
         self.assertIn("[file saved: m.txt (3 bytes) -> ", txt)
         self.assertIn("1 file", txt)
+
+    # --- F2: two downloads of the same file (listener + `switchboard files`, or a re-leased poll) ---
+    def _rec(self, size=files.CHUNK * 3 + 1234):
+        plain = os.urandom(size)
+        key = files.new_key()
+        fid = "f" + os.urandom(12).hex()
+        n = files.parts(size)
+        cts = [files.encrypt_chunk(key, fid, i, n, plain[i * files.CHUNK:(i + 1) * files.CHUNK]) for i in range(n)]
+        rec = {"id": fid, "name": "report.pdf", "size": size, "n": n, "chunk": files.CHUNK,
+               "sha256": hashlib.sha256(plain).hexdigest(), "key": base64.b64encode(key).decode()}
+        return rec, cts
+
+    def test_overlapping_raw_downloads_never_return_a_partial_file(self):
+        rec, cts = self._rec()
+        folder = os.path.join(self.tmp, "race")
+        res = {}
+
+        def run(tag, start, fail_at=None):
+            time.sleep(start)
+
+            def get(i):
+                time.sleep(0.15)
+                if fail_at is not None and i == fail_at:
+                    raise client.SwitchboardError("connection dropped")
+                return cts[i]
+            try:
+                res[tag] = files.download(get, rec, folder)
+            except Exception as e:
+                res[tag] = e
+        for fail in (None, 2):
+            res.clear()
+            a = threading.Thread(target=run, args=("a", 0.0))
+            b = threading.Thread(target=run, args=("b", 0.2, fail))
+            a.start(); b.start(); a.join(); b.join()
+            for tag, v in res.items():
+                if isinstance(v, str):
+                    self.assertEqual(hashlib.sha256(open(v, "rb").read()).hexdigest(), rec["sha256"], (fail, tag))
+            self.assertIsInstance(res["a"], str)  # the first caller is never broken by the second
+            self.assertFalse([x for x in os.listdir(folder) if x.startswith(".sb-partial-")])
+
+    def test_overlapping_client_saves_give_one_complete_file(self):
+        data = os.urandom(files.CHUNK * 3 + 99)
+        slow = lambda *a, **k: (time.sleep(0.1) if "file/chunk" in a[2] and a[1] == "GET" else None) or self.loop(*a, **k)
+        client.Agent("A").send_files("B", [self.mk("report.pdf", data)])
+        with mock.patch.object(client, "api", slow):
+            out = {}
+            t1 = threading.Thread(target=lambda: out.setdefault("inbox", client.Agent("B").inbox()))
+            t1.start()
+            time.sleep(0.15)
+            out["files"] = client.Agent("B").files()  # retries the pending record while the inbox is mid-download
+            t1.join()
+        on_disk = os.listdir(profiles.files_dir("b"))
+        self.assertEqual(on_disk, ["report.pdf"])  # no "report (2).pdf", no partials
+        p = os.path.join(profiles.files_dir("b"), "report.pdf")
+        self.assertEqual(open(p, "rb").read(), data)
+        self.assertEqual(out["inbox"][0]["files"][0]["path"], p)
+        self.assertEqual(out["files"][0]["status"], "saved")
+        self.assertEqual(profiles.files_load("b")[out["files"][0]["id"]]["status"], "saved")
+
+    def test_saved_record_never_goes_back(self):
+        profiles.files_put("b", "fx", {"status": "saved", "path": "/x", "key": None})
+        profiles.files_put("b", "fx", {"status": "failed", "error": "late failure"})
+        profiles.files_put("b", "fx", {"status": "pending", "key": "k"})
+        r = profiles.files_load("b")["fx"]
+        self.assertEqual((r["status"], r["path"], r.get("key")), ("saved", "/x", None))
+
+    def test_old_partials_swept_live_ones_kept(self):
+        folder = os.path.join(self.tmp, "sw")
+        os.makedirs(folder)
+        old, live = os.path.join(folder, ".sb-partial-f1-x"), os.path.join(folder, ".sb-partial-f2-y")
+        for p in (old, live):
+            open(p, "w").close()
+        os.utime(old, (time.time() - 7200, time.time() - 7200))
+        files.sweep_partials(folder)
+        self.assertEqual(os.listdir(folder), [".sb-partial-f2-y"])
 
     def test_rename_from_dashboard_updates_profile(self):
         self.loop.self_name["ab"] = "Bee"

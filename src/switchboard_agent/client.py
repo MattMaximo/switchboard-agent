@@ -450,6 +450,17 @@ class Agent:
         folder = os.path.expanduser(getattr(self, "save_to", None) or profiles.files_dir(slug))
         out = {"name": clean(rec.get("name"), 120), "size": rec.get("size"), "from": clean(rec.get("from"))}
         get = lambda i: self._api("GET", "/api/agent/file/chunk?id=%s&i=%d" % (rec["id"], i), raw_out=True, timeout=120)
+        # one download per file at a time on this computer (a listener and `switchboard files` can overlap);
+        # whoever comes second sees the file already saved and returns that path
+        with profiles.locked(slug + ".download"):
+            cur = profiles.files_load(slug).get(rec["id"]) or {}
+            if cur.get("status") == "saved" and cur.get("path"):
+                return dict(out, path=cur["path"])
+            if cur.get("status") == "gone":
+                return dict(out, error=clean(cur.get("error") or "the file is no longer on the relay", 200))
+            return self._save_file_locked(rec, slug, folder, out, get)
+
+    def _save_file_locked(self, rec, slug, folder, out, get):
         try:
             path = files_mod.download(get, rec, folder)
         except (FileError, SwitchboardError, OSError) as e:

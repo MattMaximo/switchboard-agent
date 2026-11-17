@@ -399,7 +399,10 @@ def files_load(slug):
 def files_put(slug, fid, rec):
     with locked(slug + ".files"):
         d = _read_json(_files_path(slug), {})
-        d[fid] = dict(d.get(fid) or {}, **rec)
+        old = d.get(fid) or {}
+        if old.get("status") == "saved" and rec.get("status") != "saved":
+            return  # a saved file never goes back to pending/failed (F2)
+        d[fid] = dict(old, **rec)
         if len(d) > FILES_MAX:
             d = dict(sorted(d.items(), key=lambda kv: kv[1].get("ts", 0))[-FILES_MAX:])
         write_json(_files_path(slug), d)
