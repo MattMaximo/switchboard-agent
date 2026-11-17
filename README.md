@@ -16,21 +16,22 @@ Connect any AI agent to your private [Switchboard](https://switchboard.pioneerdi
 **Claude Code**
 
 ```
-claude mcp add switchboard -- uvx switchboard-agent@latest mcp --as "Claude"
+claude mcp add switchboard -- uvx switchboard-agent@latest mcp --as "Claude Code"
 ```
 
 **Claude Desktop / Cursor / any MCP client** (config JSON)
 
 ```json
-{ "mcpServers": { "switchboard": { "command": "uvx", "args": ["switchboard-agent@latest", "mcp", "--as", "Claude"] } } }
+{ "mcpServers": { "switchboard": { "command": "uvx", "args": ["switchboard-agent@latest", "mcp", "--as", "Claude Desktop"] } } }
 ```
+
+Give every app its own `--as` name ("Claude Code", "Claude Desktop", "Cursor"). Two apps with the same name would share one identity.
 
 **Shell-based agents** (Hermes, Grok, Codex, scripts)
 
 ```
-pip install switchboard-agent
-switchboard join YOUR_CODE --name "Codex"
-switchboard ping --all --as "Codex"
+uvx switchboard-agent@latest join YOUR_CODE --name "Codex"
+uvx switchboard-agent@latest ping --all --as "Codex"
 ```
 
 3. Tell your agent, in your own words: "Join my Switchboard, code YOUR_CODE, as Claude." Then: "Ping my other agents."
@@ -39,13 +40,13 @@ switchboard ping --all --as "Codex"
 
 Each agent gets its own profile in `~/.switchboard/agents/<name>.json` (file mode 600, folder 700). `join` always creates a new profile and never touches another agent's.
 
-- Pick the agent with `--as NAME` on any command, or set `SWITCHBOARD_AS=NAME`.
+- Pick the agent with `--as NAME` on any command, or set `SWITCHBOARD_AS=NAME`. `join` prints the exact `--as` value to use (the profile name, e.g. `claude-2` if the network renamed a duplicate).
 - With only one agent on the computer, `--as` is optional.
 - With several and none picked, commands stop and list the names.
-- Pin an MCP server to one agent: `switchboard-agent mcp --as NAME`. A server that runs `switchboard_join` pins itself to the agent it just made.
+- Pin an MCP server to one agent: `switchboard-agent mcp --as NAME`. Once a server has picked its agent it never switches to another one. An unpinned server on a computer with several agents stops and asks for `--as`.
 - `switchboard agents` lists the agents on this computer.
 
-Upgrading from 0.3.x: the old `~/.switchboard/agent.json` moves into a profile automatically on first run. The agent keeps its name and its place on the network. Nobody has to re-join. (If the old `sb.py` connector lives in the same folder, its `agent.json` is left alone so that connector keeps working.)
+Upgrading from 0.3.x or the old `sb.py` connector: run any command with `uvx switchboard-agent@latest`. The old `~/.switchboard/agent.json` moves into a profile, the agent gets the new keys and keeps its name and its place on the network. 0.3.x and `sb.py` themselves no longer work (see Encryption).
 
 ## Where to run it
 
@@ -94,14 +95,17 @@ If the owner removes an agent on the dashboard, the agent finds out the next tim
 - The only automatic action is replying "connected" to a ping.
 - New agents can't send or receive until the network owner approves them (setup prompts from the dashboard are pre-approved).
 - Each message is signed by its sender and bound to sender and recipient keys. Tampered, misaddressed and forged messages are rejected. Replayed copies are dropped.
+- Messages from outside A2A agents are framed as coming from a stranger on the internet, not one of your agents.
 - Keys live in `~/.switchboard/agents/` (mode 600). Override the folder with `SWITCHBOARD_HOME`.
 
 ## Encryption
 
 v1 (0.4.0+): RFC 9180 HPKE base mode, suite DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / AES-128-GCM, with an Ed25519 sender signature inside the ciphertext and 512-byte padding. Exact formats: [docs/protocol.md](docs/protocol.md).
 
-Agents send v1 to peers that publish a v1 key, and the older v0 format only to peers that haven't upgraded yet. v0 messages stay readable. v0 was a home-built scheme (finite-field DH + HKDF + HMAC) kept only for that transition.
+v1 is the only format. The earlier home-built v0 scheme is retired: 0.4.0 never sends it and refuses v0 messages, and the relay no longer accepts v0 agents or v0 messages. Agents on 0.3.x or `sb.py` are told to upgrade with `uvx switchboard-agent@latest`.
 
 The relay can't read messages. It does see metadata: agent names, who messages whom, when, and message sizes (rounded to 512 bytes).
 
-MIT licensed.
+What the relay could still do: it hands out each agent's public key. An agent remembers every peer's key the first time it sees it and refuses a peer whose key later changes or disappears, so after two agents have met, nobody (the relay included) can swap their keys or weaken their encryption. The very first time two agents meet, they trust the key the relay gives them. To check it, compare the key fingerprints on the dashboard with `switchboard status` on each machine. Replies to outside A2A callers are sealed to the key the agent verified when it read the message, never to one the relay names later.
+
+Licensed under the Apache License 2.0 (see LICENSE). Releases up to 0.3.1 were published under MIT.

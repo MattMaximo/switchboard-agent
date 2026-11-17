@@ -157,14 +157,3 @@ def join_proof(my_priv, new_pub):
 
 def fingerprint(pub_hex):
     return hashlib.sha256(bytes.fromhex(pub_hex)).hexdigest()[:12]
-
-
-def b64url(b):
-    return base64.urlsafe_b64encode(b).decode().rstrip("=")
-
-
-def card_params(pub_hex):
-    """Agent Card extension params advertising this key."""
-    b = bytes.fromhex(pub_hex)
-    return dict(SUITE_NAME, version=VERSION, pub1=pub_hex, x25519=b64url(b[:32]), ed25519=b64url(b[32:]),
-                info_prefix=LABEL.decode(), padding=PAD)

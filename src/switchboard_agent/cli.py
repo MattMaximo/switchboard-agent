@@ -5,9 +5,15 @@ import time
 
 from . import __version__
 from . import a2a as a2a_mod
-from .client import Agent, SwitchboardError, join
+from .client import Agent, SwitchboardError, clean, join
 from .mcp import _fmt_inbox, serve
 from .profiles import all_profiles
+
+
+def _reply_line(t, r):
+    if not r:
+        return "no reply yet (state %s)" % t.get("status", {}).get("state")
+    return "reply: %s%s" % (r["text"], "" if r["encrypted"] else "  (not end-to-end encrypted)")
 
 
 def _as(sp):
@@ -69,7 +75,7 @@ def main(argv=None):
         if a.cmd == "join":
             r = join(a.code, a.name, a.kind, a.host)
             print('Connected to %s\'s Switchboard as "%s" (key %s).' % (r["owner"], r["name"], r["fingerprint"]))
-            print('Use --as "%s" in later commands on this computer.' % r["name"])
+            print('Use --as %s in later commands on this computer.' % r["slug"])
             if not r.get("approved", True):
                 print("Waiting for the owner to approve this agent on their dashboard.")
             return
@@ -78,7 +84,7 @@ def main(argv=None):
             if not ps:
                 print("No agents set up on this computer yet.")
             for p in ps:
-                print('- "%s" on %s\'s Switchboard (%s)' % (p["name"], p.get("owner"), p["host"]))
+                print('- "%s" (--as %s) on %s\'s Switchboard (%s)' % (p["name"], p["slug"], p.get("owner"), p["host"]))
             return
         if a.cmd == "a2a-send":
             task, card = a2a_mod.send(a.url, a.text, plain=a.plain)
@@ -86,13 +92,13 @@ def main(argv=None):
                                                   "not end-to-end encrypted" if a.plain else "end-to-end encrypted"))
             if a.wait:
                 t, r = a2a_mod.wait_reply(a.url, task["id"], card, a.wait)
-                print("reply: %s" % r["text"] if r else "no reply yet (state %s)" % t.get("status", {}).get("state"))
+                print(_reply_line(t, r))
             return
         if a.cmd == "a2a-get":
             card = a2a_mod.fetch_card(a.url)
             t = a2a_mod.get_task(a.url, a.task, card)
             r = a2a_mod.read_reply(t, card)
-            print("reply: %s" % r["text"] if r else "no reply yet (state %s)" % t.get("status", {}).get("state"))
+            print(_reply_line(t, r))
             return
         ag = Agent(a.as_name)
         if a.cmd == "status":
@@ -102,8 +108,8 @@ def main(argv=None):
             if x.get("on"):
                 print("A2A address: %s%s" % (x.get("url"), " (unencrypted messages allowed)" if x.get("plain") else ""))
             for p in ag.peers():
-                print("- %s: %s%s" % (p["name"], "online" if p["online"] else "offline",
-                                      "" if p.get("pub1") else " (legacy encryption)"))
+                bad = ag.peer_problem(p)
+                print("- %s: %s%s" % (clean(p["name"]), "online" if p["online"] else "offline", " (%s)" % bad if bad else ""))
         elif a.cmd == "ping":
             if not (a.name or a.all):
                 ap.error("ping needs a NAME or --all")
@@ -146,7 +152,7 @@ def main(argv=None):
                     if items:
                         print(_fmt_inbox(items), flush=True)
                 except SwitchboardError as e:
-                    if e.code == "removed_by_owner":
+                    if e.code in ("removed_by_owner", "key_conflict", "invalid_token") or str(e).startswith("This Switchboard server"):
                         raise
                     print("(%s; retrying)" % e, file=sys.stderr, flush=True)
                     time.sleep(5)

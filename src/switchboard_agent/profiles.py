@@ -3,18 +3,30 @@
     ~/.switchboard/                 (0700; override with SWITCHBOARD_HOME)
         agents/<slug>.json          (0600) one per agent: host, id, token, keys
         agents/<slug>.seen          recent message ids (replay protection)
+        agents/<slug>.pins          peer id -> v1 key, remembered the first time each peer is seen
+        agents/<slug>.a2a           outside A2A messages this agent read (task id -> how to reply)
         agent.json                  legacy single-agent file (<= 0.3.x); migrated automatically
 
 Pick an agent with `--as NAME` or SWITCHBOARD_AS. If exactly one profile exists it is used.
 """
+import contextlib
 import json
 import os
 import re
 import sys
+import time
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+    import msvcrt
 
 
 class ProfileError(Exception):
-    pass
+    def __init__(self, msg, code=None):
+        super().__init__(msg)
+        self.code = code
 
 
 def home():
@@ -33,6 +45,33 @@ def _ensure_dirs():
     for d in (home(), agents_dir()):
         os.makedirs(d, exist_ok=True)
         os.chmod(d, 0o700)
+
+
+@contextlib.contextmanager
+def locked(name):
+    """Exclusive lock shared by every switchboard process on this computer (CLI calls, MCP servers)."""
+    _ensure_dirs()
+    fd = os.open(os.path.join(agents_dir(), "." + name + ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if fcntl:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        yield
+    finally:
+        try:
+            if fcntl:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            else:
+                os.lseek(fd, 0, 0)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(fd)
 
 
 def slugify(name):
@@ -54,8 +93,25 @@ def write_json(path, obj):
     os.replace(tmp, path)
 
 
+def _read_json(path, default):
+    try:
+        with open(path) as f:
+            v = json.load(f)
+        return v if isinstance(v, type(default)) else default
+    except (FileNotFoundError, ValueError):
+        return default
+
+
 def save(p):
     write_json(path_for(p["slug"]), p)
+
+
+def load(slug):
+    p = _read_json(path_for(slug), {})
+    if not p.get("token"):
+        raise ProfileError("This agent's profile (%s) is gone from this computer." % slug, "gone")
+    p["slug"] = slug
+    return p
 
 
 def new_slug(name):
@@ -74,36 +130,51 @@ def new_slug(name):
         return slug
 
 
+def _scrub_legacy(lp, slug, c):
+    """Replace the old agent.json with a note that holds no token or keys."""
+    write_json(lp + ".migrated", {"migrated_to": path_for(slug), "id": c.get("id"), "name": c.get("name"),
+                                  "host": c.get("host"), "note": "token and keys moved; this file holds no secrets"})
+    os.remove(lp)
+
+
 def delete(slug):
-    for ext in (".json", ".seen"):
+    try:
+        gone_id = _read_json(path_for(slug), {}).get("id")
+    except ProfileError:
+        gone_id = None
+    for ext in (".json", ".seen", ".pins", ".a2a"):
         try:
             os.remove(os.path.join(agents_dir(), slug + ext))
         except FileNotFoundError:
             pass
+    for lp in (legacy_path(), legacy_path() + ".migrated"):  # leftovers of the same agent
+        if gone_id and _read_json(lp, {}).get("id") == gone_id:
+            try:
+                os.remove(lp)
+            except FileNotFoundError:
+                pass
 
 
 def migrate_legacy():
-    """Move a <=0.3.x ~/.switchboard/agent.json into agents/<slug>.json. Returns the slug or None."""
+    """Move a <=0.3.x ~/.switchboard/agent.json into agents/<slug>.json. Returns the slug or None.
+
+    The legacy sb.py connector used the same file. Its encryption is retired, so its agent.json is
+    moved over too (same id, name and token) and sb.py stops being able to use it."""
     lp = legacy_path()
-    try:
-        with open(lp) as f:
-            c = json.load(f)
-    except (FileNotFoundError, ValueError):
+    if not _read_json(lp, {}).get("token"):
         return None
-    if not c.get("token"):
-        return None
-    if os.path.exists(os.path.join(home(), "sb.py")) and not os.environ.get("SWITCHBOARD_MIGRATE_SBPY"):
-        # This identity belongs to the legacy sb.py connector, which still reads agent.json.
-        # Moving it would break that agent, so leave it alone (set SWITCHBOARD_MIGRATE_SBPY=1 to take it over).
-        return None
-    for p in _load_all():
-        if p.get("id") == c.get("id") and p.get("host") == c.get("host"):
-            os.replace(lp, lp + ".migrated")
-            return p["slug"]
-    slug = new_slug(c.get("name", "agent"))
-    p = dict(c, slug=slug, asked_name=c.get("name"), migrated_from="agent.json")
-    save(p)
-    os.replace(lp, lp + ".migrated")
+    with locked("migrate"):
+        c = _read_json(lp, {})  # re-read: another process may have migrated it meanwhile
+        if not c.get("token"):
+            return None
+        for p in _load_all():
+            if p.get("id") == c.get("id") and p.get("host") == c.get("host"):
+                _scrub_legacy(lp, p["slug"], c)
+                return p["slug"]
+        slug = new_slug(c.get("name", "agent"))
+        p = dict(c, slug=slug, asked_name=c.get("name"), migrated_from="agent.json")
+        save(p)
+        _scrub_legacy(lp, slug, c)
     sys.stderr.write("Switchboard: moved this agent's identity (\"%s\") to %s\n" % (p.get("name"), path_for(slug)))
     return slug
 
@@ -115,13 +186,9 @@ def _load_all():
         return []
     out = []
     for n in names:
-        if not n.endswith(".json"):
+        if not n.endswith(".json") or n.startswith("."):
             continue
-        try:
-            with open(os.path.join(agents_dir(), n)) as f:
-                p = json.load(f)
-        except (OSError, ValueError):
-            continue
+        p = _read_json(os.path.join(agents_dir(), n), {})
         if p.get("token"):
             p["slug"] = n[:-5]
             out.append(p)
@@ -133,28 +200,32 @@ def all_profiles():
     return _load_all()
 
 
+def _label(p):
+    return '"%s" (--as %s)' % (p["name"], p["slug"])
+
+
 def choose(as_name=None):
     """Return the selected profile dict or raise ProfileError with a short, actionable message."""
     as_name = (as_name or os.environ.get("SWITCHBOARD_AS") or "").strip()
     ps = all_profiles()
     if not ps:
-        raise ProfileError("This agent isn't connected yet. Join first with your network code and a name.")
+        raise ProfileError("This agent isn't connected yet. Join first with your network code and a name.", "none")
     if not as_name:
         if len(ps) == 1:
             return ps[0]
         raise ProfileError("Several agents are set up on this computer: %s. Pick one with --as NAME."
-                           % ", ".join('"%s"' % p["name"] for p in ps))
+                           % ", ".join(_label(p) for p in ps), "ambiguous")
     key = as_name.lower()
-    for test in (lambda p: p["name"].lower() == key, lambda p: p["slug"] == key, lambda p: p.get("id") == as_name,
+    for test in (lambda p: p["slug"] == key, lambda p: p["name"].lower() == key, lambda p: p.get("id") == as_name,
                  lambda p: (p.get("asked_name") or "").lower() == key, lambda p: p["slug"] == slugify(as_name)):
         hits = [p for p in ps if test(p)]
         if len(hits) == 1:
             return hits[0]
         if len(hits) > 1:
-            raise ProfileError("More than one agent here matches %r: %s. Use the exact name."
-                               % (as_name, ", ".join('"%s"' % p["name"] for p in hits)))
+            raise ProfileError("More than one agent here matches %r: %s. Use --as with the one you mean, e.g. --as %s."
+                               % (as_name, ", ".join(_label(p) for p in hits), hits[0]["slug"]), "ambiguous")
     raise ProfileError("No agent named %r on this computer. Set up here: %s."
-                       % (as_name, ", ".join('"%s"' % p["name"] for p in ps)))
+                       % (as_name, ", ".join(_label(p) for p in ps)), "nomatch")
 
 
 # --- replay cache (message ids seen recently) ---
@@ -176,3 +247,40 @@ def seen_save(slug, ids):
     with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         f.write("\n".join(ids[-SEEN_MAX:]))
     os.replace(tmp, path)
+
+
+# --- peer key pins (peer id -> pub1, first seen) ---
+def pins_load(slug):
+    return _read_json(os.path.join(agents_dir(), slug + ".pins"), {})
+
+
+def pins_add(slug, new):
+    """Remember keys for peers not pinned yet. Existing pins never change."""
+    with locked(slug):
+        path = os.path.join(agents_dir(), slug + ".pins")
+        pins = _read_json(path, {})
+        add = {k: v for k, v in new.items() if k not in pins}
+        if add:
+            pins.update(add)
+            write_json(path, pins)
+        return pins
+
+
+# --- outside A2A messages this agent has read (so replies don't depend on the relay) ---
+A2A_MAX = 500
+
+
+def a2a_load(slug):
+    return _read_json(os.path.join(agents_dir(), slug + ".a2a"), {})
+
+
+def a2a_record(slug, recs):
+    if not recs:
+        return
+    with locked(slug):
+        path = os.path.join(agents_dir(), slug + ".a2a")
+        d = _read_json(path, {})
+        d.update(recs)
+        if len(d) > A2A_MAX:
+            d = dict(sorted(d.items(), key=lambda kv: kv[1].get("ts", 0))[-A2A_MAX:])
+        write_json(path, d)

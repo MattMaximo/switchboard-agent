@@ -58,7 +58,10 @@ def fetch_card(url):
 def endpoint(card):
     for i in card.get("supportedInterfaces", []):
         if i.get("protocolBinding") == "JSONRPC":
-            return i["url"]
+            u = str(i.get("url") or "")
+            if not (u.startswith("https://") or u.startswith(("http://localhost:", "http://127.0.0.1:"))):
+                raise A2AError("agent's endpoint is not HTTPS: %s" % u[:100])
+            return u
     raise A2AError("agent has no JSON-RPC interface")
 
 
@@ -80,6 +83,34 @@ def caller_identity():
         c = {"priv1": priv, "pub1": pub}
         profiles.write_json(path, c)
         return c
+
+
+def _sent_path():
+    return os.path.join(profiles.home(), "a2a-sent.json")
+
+
+def remember_sent(task_id, url, card, encrypted):
+    """What we sent, so the reply is judged by what we did, not by what the server says later."""
+    p = _sent_path()
+    with profiles.locked("a2a-sent"):
+        try:
+            with open(p) as f:
+                d = json.load(f)
+        except (FileNotFoundError, ValueError):
+            d = {}
+        d[task_id] = {"url": url, "pub1": (e2e_params(card) or {}).get("pub1") if encrypted else None,
+                      "encrypted": bool(encrypted), "ts": time.time()}
+        if len(d) > 500:
+            d = dict(sorted(d.items(), key=lambda kv: kv[1].get("ts", 0))[-500:])
+        profiles.write_json(p, d)
+
+
+def sent_record(task_id):
+    try:
+        with open(_sent_path()) as f:
+            return json.load(f).get(task_id)
+    except (FileNotFoundError, ValueError):
+        return None
 
 
 def rpc(url, method, params, ext=True):
@@ -112,7 +143,10 @@ def send(url, text, plain=False, name=None, ident=None, return_immediately=True,
         msg["metadata"] = {EXT: {"senderName": name}}
     res = rpc(ep, "SendMessage", {"message": msg, "configuration": {"returnImmediately": bool(return_immediately)}},
               ext=not plain)
-    return res.get("task") or res, card
+    task = res.get("task") or res
+    if task.get("id"):
+        remember_sent(task["id"], url, card, not plain)
+    return task, card
 
 
 def get_task(url, task_id, card=None):
@@ -121,18 +155,24 @@ def get_task(url, task_id, card=None):
     return r if "status" in r else (r.get("task") or {})  # GetTask returns the Task itself
 
 
-def read_reply(task, card, ident=None):
-    """Return the reply text from a completed task (decrypting if needed), or None if not answered yet."""
+def read_reply(task, card, ident=None, sent=None):
+    """Return the reply text from a completed task (decrypting if needed), or None if not answered yet.
+
+    `sent` is our own record of the request (remember_sent). If we sent it encrypted, only an encrypted
+    reply from the key we sent to is accepted, whatever the card or server say now."""
     arts = task.get("artifacts") or []
     if not arts:
         return None
+    sent = sent if sent is not None else sent_record(task.get("id")) or {}
     part = (arts[-1].get("parts") or [{}])[0]
     if "text" in part:
+        if sent.get("encrypted"):
+            raise A2AError("refused a plain-text reply to a message that was sent end-to-end encrypted")
         return {"text": part["text"], "encrypted": False}
     d = part.get("data") or {}
-    params = e2e_params(card) or {}
-    if d.get("senderKey") != params.get("pub1"):
-        raise A2AError("reply was not sealed by the key this agent's card advertises")
+    want = sent.get("pub1") or (e2e_params(card) or {}).get("pub1")
+    if d.get("senderKey") != want:
+        raise A2AError("reply was not sealed by the key this message was sent to")
     ident = ident or caller_identity()
     o = crypto1.unseal(ident["priv1"], ident["pub1"], d["senderKey"], d["blob"])
     return {"text": o.get("text", ""), "encrypted": True}

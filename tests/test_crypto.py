@@ -1,7 +1,7 @@
 import base64
 import unittest
 
-from switchboard_agent import crypto0, crypto1
+from switchboard_agent import crypto1
 from switchboard_agent.crypto1 import CryptoError
 
 
@@ -55,17 +55,12 @@ class V1(unittest.TestCase):
         with self.assertRaises(CryptoError):
             crypto1.unseal(self.m[0], self.m[1], self.a[1], blob)
 
-    def test_v0_blob_not_v1(self):
-        p0, P0 = crypto0.new_keypair()
-        q0, Q0 = crypto0.new_keypair()
-        blob = crypto0.seal(p0, P0, Q0, self.msg)
+    def test_v0_blob_refused(self):
+        # A retired v0 blob: version byte 0x00 + 256-byte FFDH value + ciphertext + tag.
+        blob = base64.b64encode(b"\x00" + b"\x11" * 800).decode()
         self.assertEqual(crypto1.blob_version(blob), 0)
-        with self.assertRaises(CryptoError):
+        with self.assertRaisesRegex(CryptoError, "not a v1"):
             crypto1.unseal(self.b[0], self.b[1], self.a[1], blob)
-        self.assertEqual(crypto0.unseal(q0, Q0, P0, blob), self.msg)
-
-    def test_v0_fingerprint_odd_hex(self):
-        self.assertEqual(crypto0.fingerprint("abc"), crypto0.fingerprint("0abc"))
 
     def test_proofs_verify(self):
         from cryptography.hazmat.primitives.asymmetric import ed25519
