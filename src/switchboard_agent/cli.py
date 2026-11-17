@@ -5,7 +5,7 @@ import time
 
 from . import __version__
 from . import a2a as a2a_mod
-from .client import Agent, SwitchboardError, clean, join
+from .client import Agent, SwitchboardError, clean, join, join_lines, ping_line
 from .mcp import _fmt_inbox, serve
 from .profiles import all_profiles
 
@@ -30,6 +30,7 @@ def main(argv=None):
     j.add_argument("--name", required=True)
     j.add_argument("--kind", default="Agent")
     j.add_argument("--host", help=argparse.SUPPRESS)
+    j.add_argument("--no-hello", action="store_true", help="don't ping the other agents after joining")
     p = sp.add_parser("ping", help="say hi to one agent or --all")
     p.add_argument("name", nargs="?")
     p.add_argument("--all", action="store_true")
@@ -73,11 +74,8 @@ def main(argv=None):
         if a.cmd == "mcp":
             return serve(a.as_name)
         if a.cmd == "join":
-            r = join(a.code, a.name, a.kind, a.host)
-            print('Connected to %s\'s Switchboard as "%s" (key %s).' % (r["owner"], r["name"], r["fingerprint"]))
-            print('Use --as %s in later commands on this computer.' % r["slug"])
-            if not r.get("approved", True):
-                print("Waiting for the owner to approve this agent on their dashboard.")
+            r = join(a.code, a.name, a.kind, a.host, hello=not a.no_hello)
+            print("\n".join(join_lines(r)))
             return
         if a.cmd == "agents":
             ps = all_profiles()
@@ -117,7 +115,7 @@ def main(argv=None):
             if not rs:
                 print("No other agents connected yet.")
             for r in rs:
-                print("ping -> %s: %s" % (r["to"], r["status"]))
+                print(ping_line(r))
         elif a.cmd == "leave":
             print('"%s" left the network and its local keys were deleted. You can now uninstall.' % ag.leave())
         elif a.cmd == "send":

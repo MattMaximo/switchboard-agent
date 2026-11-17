@@ -208,6 +208,165 @@ class Upgrade(Home):
         self.assertEqual([p["name"] for p in profiles.all_profiles()], ["Codex"])
 
 
+class FakeServer:
+    """Answers /api/join with the next name/id and keeps a small network for the hello pings."""
+
+    def __init__(self, names, ids, peers=(), dead=(), approved=True, fail_send=False, network="u1"):
+        self.names, self.ids, self.peers, self.dead = list(names), list(ids), list(peers), set(dead)
+        self.approved, self.fail_send, self.network = approved, fail_send, network
+        self.joined, self.sent = [], []
+
+    def __call__(self, host, method, path, body=None, token=None, timeout=40):
+        if path == "/api/join":
+            self.joined.append(body)
+            aid = self.ids.pop(0)
+            return {"agent_id": aid, "name": self.names.pop(0), "token": "%s.%s.s" % (self.network, aid), "owner": "Matt",
+                    "pub1": body["pub1"], "approved": self.approved}
+        aid = (token or "..").split(".")[1]
+        if aid in self.dead:
+            raise client.SwitchboardError("This agent is no longer on this Switchboard.", "invalid_token", {"http": 401})
+        if path == "/api/agent/peers":
+            return {"agents": [dict(p) for p in self.peers]}
+        if path == "/api/agent/send":
+            if self.fail_send:
+                raise client.SwitchboardError("Network error (simulated)")
+            self.sent.append(body["to"])
+            return {"status": "mailbox"}
+        if path == "/api/agent/me":
+            return {"agent": {}}
+        return {"ok": True}
+
+
+def peer(name, aid, online=True):
+    return {"id": aid, "name": name, "pub1": crypto1.new_identity()[1], "online": online}
+
+
+class Join(Home):
+    def join(self, srv, name="Grok", **kw):
+        with mock.patch.object(client, "api", srv):
+            r = client.join("abcdefgh", name, host="https://x", **kw)
+        return r, client.join_lines(r)
+
+    def test_dead_same_name_same_network_is_replaced(self):
+        old = self.add("switchboarding", "a1")
+        with open(os.path.join(profiles.agents_dir(), "switchboarding.pins"), "w") as f:
+            f.write("{}")
+        r, lines = self.join(FakeServer(["switchboarding"], ["a2"]), "switchboarding")
+        self.assertEqual(r["slug"], "switchboarding")
+        self.assertTrue(r["replaced"])
+        self.assertEqual([(p["slug"], p["id"]) for p in profiles.all_profiles()], [("switchboarding", "a2")])
+        self.assertNotEqual(profiles.choose()["pub1"], old["pub1"])
+        self.assertFalse(os.path.exists(os.path.join(profiles.agents_dir(), "switchboarding.pins")))
+        self.assertNotIn("--as", "\n".join(lines))
+        self.assertNotIn("-2", "\n".join(lines))
+
+    def test_same_name_case_insensitive(self):
+        self.add("Claude", "a1")
+        r, _ = self.join(FakeServer(["claude"], ["a2"]), "claude")
+        self.assertEqual([p["id"] for p in profiles.all_profiles()], ["a2"])
+
+    def test_other_network_is_kept(self):
+        p = self.add("Claude", "a1")
+        p["token"] = "u9.a1.s"
+        profiles.save(p)
+        r, lines = self.join(FakeServer(["Claude"], ["a2"]), "Claude")
+        self.assertEqual(r["slug"], "claude-2")
+        self.assertEqual(sorted(p["id"] for p in profiles.all_profiles()), ["a1", "a2"])
+        self.assertIn('Several agents share this computer. Add --as "claude-2" to this agent\'s commands.', lines)
+
+    def test_other_host_is_kept(self):
+        p = self.add("Claude", "a1")
+        p["host"] = "https://y"
+        profiles.save(p)
+        r, _ = self.join(FakeServer(["Claude"], ["a2"]), "Claude")
+        self.assertEqual(len(profiles.all_profiles()), 2)
+
+    def test_live_agent_renamed_by_server_is_kept(self):
+        self.add("Claude", "a1")
+        r, lines = self.join(FakeServer(["Claude 2"], ["a2"]), "Claude")
+        self.assertEqual(r["slug"], "claude-2")
+        self.assertEqual(len(profiles.all_profiles()), 2)
+        self.assertIn('Several agents share this computer. Add --as "Claude 2" to this agent\'s commands.', lines)
+
+    def test_join_says_hi(self):
+        srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1"), peer("Claude", "b2")])
+        r, lines = self.join(srv)
+        self.assertEqual(srv.sent, ["b1", "b2"])
+        self.assertEqual(lines, ['Connected to Matt\'s Switchboard as "Grok".',
+                                 "Said hi to 2 agents: Boo, Claude. Their replies will show up in: " + client.inbox_cmd()])
+
+    def test_join_alone(self):
+        r, lines = self.join(FakeServer(["Grok"], ["a2"]))
+        self.assertEqual(lines, ['Connected to Matt\'s Switchboard as "Grok".', "No other agents on this network yet."])
+
+    def test_hello_failure_keeps_join(self):
+        srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1")], fail_send=True)
+        r, lines = self.join(srv)
+        self.assertEqual(profiles.choose()["id"], "a2")
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[1], "Couldn't say hi to Boo: Network error (simulated)")
+
+    def test_pending_agent_does_not_ping(self):
+        srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1")], approved=False)
+        r, lines = self.join(srv)
+        self.assertEqual(srv.sent, [])
+        self.assertIn("Waiting for the owner to approve this agent on their dashboard.", lines)
+
+    def test_no_hello_flag(self):
+        srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1")])
+        r, lines = self.join(srv, hello=False)
+        self.assertEqual((srv.sent, len(lines)), ([], 1))
+
+    def test_several_agents_inbox_line_has_as(self):
+        self.add("Codex", "a1")
+        r, lines = self.join(FakeServer(["Grok"], ["a2"], peers=[peer("Codex", "a1")]))
+        self.assertIn('inbox --as "Grok"', lines[1])
+
+    def test_invalid_token_deletes_only_that_profile(self):
+        self.add("Claude", "a1")
+        self.add("Codex", "a2")
+        srv = FakeServer([], [], dead={"a1"})
+        with mock.patch.object(client, "api", srv):
+            with self.assertRaises(client.SwitchboardError) as cm:
+                client.Agent("Claude").inbox()
+        self.assertEqual(str(cm.exception), "Claude is no longer on this Switchboard, so its local keys were deleted. "
+                                             "Ask your user for a new setup prompt.")
+        self.assertEqual([p["name"] for p in profiles.all_profiles()], ["Codex"])
+
+    def test_other_401_keeps_profile(self):
+        self.add("Claude", "a1")
+
+        def no_code(*a, **k):
+            raise client.SwitchboardError("missing agent token", None, {"http": 401})
+        with mock.patch.object(client, "api", no_code):
+            with self.assertRaises(client.SwitchboardError):
+                client.Agent("Claude").inbox()
+        self.assertEqual(len(profiles.all_profiles()), 1)
+
+    def test_ping_wording(self):
+        self.assertEqual(client.ping_line({"to": "Boo", "status": "delivered"}), "Pinged Boo: delivered")
+        self.assertEqual(client.ping_line({"to": "Boo", "status": "mailbox"}),
+                         "Pinged Boo: sent, it will answer when it next checks in")
+        self.assertEqual(client.ping_line({"to": "Old", "status": "not sent: Old is old."}), "Couldn't ping Old: Old is old.")
+
+    def test_blocked_join_is_short(self):
+        with self.assertRaises(client.SwitchboardError) as cm:
+            client.join("abcdefgh", "X", host="http://127.0.0.1:9")
+        msg = str(cm.exception)
+        self.assertTrue(msg.startswith("Can't reach 127.0.0.1:9 from here, so nothing was joined and your code is still good."), msg)
+        self.assertNotIn("Errno", msg)
+        self.assertEqual(profiles.all_profiles(), [])
+
+    def test_cli_join_output(self):
+        srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1")])
+        buf = io.StringIO()
+        with mock.patch.object(client, "api", srv), mock.patch("sys.stdout", buf):
+            from switchboard_agent import cli
+            cli.main(["join", "abcdefgh", "--name", "Grok", "--host", "https://x"])
+        self.assertEqual(buf.getvalue().splitlines(), ['Connected to Matt\'s Switchboard as "Grok".',
+                                                       "Said hi to 1 agent: Boo. Their replies will show up in: " + client.inbox_cmd()])
+
+
 class Relay:
     """A fake relay holding a peer list and a mailbox, which tests can tamper with."""
 
@@ -419,15 +578,41 @@ class MCP(Home):
     def test_mcp_join_refuses_taken_name(self):
         self.add("Claude", "a1")
         srv = mcp.Server("Claude")
-        with self.assertRaisesRegex(client.SwitchboardError, "already exists on this computer"):
-            srv.call("switchboard_join", {"code": "abcdefgh", "name": "Claude"})
+        with mock.patch.object(client, "api", lambda *a, **k: {"agent": {}}):  # that agent is alive
+            with self.assertRaisesRegex(client.SwitchboardError, "already exists on this computer"):
+                srv.call("switchboard_join", {"code": "abcdefgh", "name": "Claude"})
 
-    def test_mcp_join_renamed_says_change_config(self):
-        def fake_api(host, method, path, body=None, token=None, timeout=40):
-            return {"agent_id": "a2", "name": "Claude Desktop 2", "token": "u1.a2.s", "owner": "Matt", "pub1": body["pub1"]}
-        with mock.patch.object(client, "api", fake_api):
-            msg = mcp.Server("Claude Desktop").call("switchboard_join", {"code": "abcdefgh", "name": "Claude Desktop"})
-        self.assertIn('--as "claude-desktop-2"', msg)
+    def test_mcp_join_dead_twin_is_replaced(self):
+        self.add("Claude Code", "a1")
+        srv = FakeServer(names=["Claude Code"], ids=["a2"], dead={"a1"})
+        with mock.patch.object(client, "api", srv):
+            msg = mcp.Server("Claude Code").call("switchboard_join", {"code": "abcdefgh"})
+        self.assertNotIn("MCP config", msg)
+        self.assertEqual([(p["slug"], p["id"]) for p in profiles.all_profiles()], [("claude-code", "a2")])
+
+    def test_mcp_renamed_join_survives_restart(self):
+        # config pins "Claude Code", the user says "join as Claude", the network already has a Claude
+        srv = FakeServer(names=["Claude 2"], ids=["a2"])
+        with mock.patch.object(client, "api", srv):
+            msg = mcp.Server("Claude Code").call("switchboard_join", {"code": "abcdefgh", "name": "Claude"})
+            self.assertNotIn("MCP config", msg)
+            self.assertNotIn("--as", msg)
+            self.assertEqual(mcp.Server("Claude Code").agent().c["id"], "a2")  # after a restart
+
+    def test_mcp_join_name_defaults_to_pin(self):
+        srv = FakeServer(names=["Cursor"], ids=["a2"], peers=[peer("Boo", "b1")])
+        with mock.patch.object(client, "api", srv):
+            msg = mcp.Server("Cursor").call("switchboard_join", {"code": "abcdefgh"})
+        self.assertEqual(srv.joined[0]["name"], "Cursor")
+        self.assertTrue(msg.startswith('Connected to Matt\'s Switchboard as "Cursor".'), msg)
+        self.assertIn("switchboard_inbox", msg)
+
+    def test_mcp_unpinned_join_with_several_agents_says_pin(self):
+        self.add("Codex", "a1")
+        srv = FakeServer(names=["Cursor"], ids=["a2"])
+        with mock.patch.object(client, "api", srv):
+            msg = mcp.Server(None).call("switchboard_join", {"code": "abcdefgh", "name": "Cursor"})
+        self.assertIn('add --as "Cursor" to this app\'s MCP config', msg)
 
     def test_unpinned_mcp_with_two_agents(self):
         self.add("Claude", "a1")

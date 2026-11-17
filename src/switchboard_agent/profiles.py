@@ -7,6 +7,9 @@
         agents/<slug>.a2a           outside A2A messages this agent read (task id -> how to reply)
         agent.json                  legacy single-agent file (<= 0.3.x); migrated automatically
 
+Joining again under the same name on the same network replaces that agent's old, dead profile
+(see dead_same_name) instead of adding "<name>-2".
+
 Pick an agent with `--as NAME` or SWITCHBOARD_AS. If exactly one profile exists it is used.
 """
 import contextlib
@@ -130,6 +133,32 @@ def new_slug(name):
         return slug
 
 
+def network_of(p):
+    """The network (owner account) a profile belongs to: the part of its token before the first dot."""
+    return str(p.get("token") or "").split(".", 1)[0]
+
+
+def dead_same_name(host, network, name):
+    """Slug of a local profile the server has just proven dead, or None.
+
+    The server never gives two agents on one network the same name (it adds " 2", " 3"...). So when it
+    hands a new agent the name N, any local profile with the same host, same network and name N belongs
+    to an agent that is no longer on that network."""
+    key = (name or "").strip().lower()
+    for p in all_profiles():
+        if p.get("host") == host and network_of(p) == network and (p.get("name") or "").strip().lower() == key:
+            return p["slug"]
+    return None
+
+
+def as_value(p, ps=None):
+    """The shortest --as value that picks this profile: its display name, or its slug if the name is shared."""
+    ps = all_profiles() if ps is None else ps
+    if sum(1 for q in ps if (q.get("name") or "").lower() == (p.get("name") or "").lower()) == 1:
+        return p["name"]
+    return p["slug"]
+
+
 def _scrub_legacy(lp, slug, c):
     """Replace the old agent.json with a note that holds no token or keys."""
     write_json(lp + ".migrated", {"migrated_to": path_for(slug), "id": c.get("id"), "name": c.get("name"),
@@ -217,6 +246,7 @@ def choose(as_name=None):
                            % ", ".join(_label(p) for p in ps), "ambiguous")
     key = as_name.lower()
     for test in (lambda p: p["slug"] == key, lambda p: p["name"].lower() == key, lambda p: p.get("id") == as_name,
+                 lambda p: (p.get("mcp_as") or "").lower() == key,
                  lambda p: (p.get("asked_name") or "").lower() == key, lambda p: p["slug"] == slugify(as_name)):
         hits = [p for p in ps if test(p)]
         if len(hits) == 1:

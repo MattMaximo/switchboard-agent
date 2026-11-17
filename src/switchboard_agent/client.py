@@ -27,11 +27,12 @@ DEFAULT_HOST = "https://switchboard.pioneerdigital.org"
 MAX_AVATAR = 64 * 1024
 UPGRADE = "uvx switchboard-agent@latest"
 
-BLOCKED = ("BLOCKED: this environment can't reach %s (%s). Your user's invite code was NOT used. "
-           "Tell your user, in one line, to rerun this on their own computer: Claude app = click 'Add folder'; "
-           "ChatGPT = accept Work mode or open a local folder; otherwise any terminal on their machine. Then run the same commands again.")
+HELP_WHERE = "Tell your user in one line to run this on their own computer (Claude app: Add folder. ChatGPT: Work mode)."
+BLOCKED_JOIN = "Can't reach %s from here, so nothing was joined and your code is still good. " + HELP_WHERE
+BLOCKED = "Can't reach %s from here. Check the connection and try again."
 
 REMOVED = "%s was removed from %s's Switchboard by the owner. Local keys deleted. Nothing else to uninstall."
+GONE = "%s is no longer on this Switchboard, so its local keys were deleted. Ask your user for a new setup prompt."
 NOT_E2E = "not end-to-end encrypted"
 OLD_PEER = ("%s is on an old Switchboard version whose encryption is no longer supported, so nothing was sent. "
             "It must upgrade first: its owner runs `" + UPGRADE + "` there, or re-adds it from the dashboard.")
@@ -77,8 +78,8 @@ def api(host, method, path, body=None, token=None, timeout=40):
             d = {}
         d.setdefault("http", e.code)
         raise SwitchboardError(d.get("error") or "Switchboard returned HTTP %s" % e.code, d.get("code"), d)
-    except urllib.error.URLError as e:
-        raise SwitchboardError(BLOCKED % (host.split("://")[-1], e.reason))
+    except (urllib.error.URLError, OSError):  # unreachable, DNS, proxy refusal, timeout
+        raise SwitchboardError(BLOCKED % host.split("://")[-1], "unreachable")
 
 
 def normalize_code(code):
@@ -90,8 +91,17 @@ def _fp(pub_hex):
     return crypto1.fingerprint(pub_hex)
 
 
-def join(code, name, kind="Agent", host=None):
-    """Create a NEW local profile and register it. Never touches other agents' profiles."""
+def inbox_cmd(as_value=None):
+    """How this agent reads its inbox, in the form it was started with (uvx or an installed command)."""
+    import sys
+    cmd = "uvx switchboard-agent@latest" if "archive-v0" in sys.prefix.replace("\\", "/") else "switchboard-agent"
+    return cmd + " inbox" + (' --as "%s"' % as_value if as_value else "")
+
+
+def join(code, name, kind="Agent", host=None, mcp_as=None, hello=True):
+    """Register a new agent and save its profile. Replaces only a dead profile with the same host,
+    network and name (see profiles.dead_same_name); never touches other agents' profiles.
+    Then says hi to the other agents unless it waits for approval. A failed hello never fails the join."""
     profiles.migrate_legacy()  # so a legacy identity is preserved before we add another
     link = (code or "").strip()
     if not host and link.startswith(("https://", "http://localhost:", "http://127.0.0.1:")) and "/j/" in link:
@@ -105,14 +115,64 @@ def join(code, name, kind="Agent", host=None):
     except SwitchboardError as e:
         if str(e) == "Missing or invalid public key.":  # a server from before 0.4
             raise SwitchboardError(OLD_SERVER)
+        if e.code == "unreachable":
+            raise SwitchboardError(BLOCKED_JOIN % host.split("://")[-1], e.code)
         raise
-    slug = profiles.new_slug(r["name"])
-    p = {"slug": slug, "host": host, "name": r["name"], "asked_name": name, "kind": kind, "id": r["agent_id"],
+    p = {"host": host, "name": r["name"], "asked_name": name, "kind": kind, "id": r["agent_id"],
          "token": r["token"], "owner": r.get("owner"), "priv1": priv1, "pub1": pub1,
          "pub1_published": r.get("pub1") == pub1, "created": int(time.time())}
-    profiles.save(p)
-    return {"name": p["name"], "owner": p["owner"], "fingerprint": _fp(pub1), "slug": slug,
-            "approved": r.get("approved", True)}
+    if mcp_as:
+        p["mcp_as"] = mcp_as
+    with profiles.locked("join"):
+        dead = profiles.dead_same_name(host, profiles.network_of(p), r["name"])
+        if dead:
+            profiles.delete(dead)  # its agent is gone; reuse the file name so --as keeps working
+            p["slug"] = dead
+            p["replaced"] = True
+        else:
+            p["slug"] = profiles.new_slug(r["name"])
+        profiles.save(p)
+    ps = profiles.all_profiles()
+    out = {"name": p["name"], "owner": p["owner"], "fingerprint": _fp(pub1), "slug": p["slug"],
+           "approved": r.get("approved", True), "several": len(ps) > 1,
+           "as": profiles.as_value(p, ps), "replaced": bool(dead), "hello": None}
+    if hello and out["approved"]:
+        try:
+            out["hello"] = Agent(p["slug"]).ping()
+        except Exception as e:  # the join itself worked; report and move on
+            out["hello_error"] = str(e)
+    return out
+
+
+def join_lines(r, inbox=None, as_hint=True):
+    """What a person (or the agent relaying to one) reads after a join.
+    inbox: how replies are read (default: the inbox command); as_hint: add the --as line when needed."""
+    inbox = inbox or inbox_cmd(r["as"] if r.get("several") else None)
+    lines = ['Connected to %s\'s Switchboard as "%s".' % (r["owner"], r["name"])]
+    if not r.get("approved", True):
+        lines.append("Waiting for the owner to approve this agent on their dashboard.")
+    elif r.get("hello_error"):
+        lines.append("Couldn't say hi to the other agents yet: %s" % r["hello_error"])
+    elif r.get("hello") is not None:
+        sent = [x["to"] for x in r["hello"] if not x["status"].startswith("not sent")]
+        failed = [x for x in r["hello"] if x["status"].startswith("not sent")]
+        if not r["hello"]:
+            lines.append("No other agents on this network yet.")
+        if sent:
+            lines.append("Said hi to %d agent%s: %s. Their replies will show up in: %s"
+                         % (len(sent), "" if len(sent) == 1 else "s", ", ".join(clean(n) for n in sent), inbox))
+        for x in failed:
+            lines.append("Couldn't say hi to %s: %s" % (clean(x["to"]), x["status"][len("not sent: "):]))
+    if r.get("several") and as_hint:
+        lines.append('Several agents share this computer. Add --as "%s" to this agent\'s commands.' % r["as"])
+    return lines
+
+
+def ping_line(r):
+    st = r["status"]
+    if st.startswith("not sent"):
+        return "Couldn't ping %s: %s" % (clean(r["to"]), st[len("not sent: "):])
+    return "Pinged %s: %s" % (clean(r["to"]), "delivered" if st == "delivered" else "sent, it will answer when it next checks in")
 
 
 class Agent:
@@ -133,6 +193,9 @@ class Agent:
                 profiles.delete(self.c["slug"])
                 owner = e.data.get("owner") or self.c.get("owner") or "your"
                 raise SwitchboardError(REMOVED % (self.c["name"], owner), e.code, e.data)
+            if e.code == "invalid_token" and e.data.get("http") == 401:
+                profiles.delete(self.c["slug"])  # the server says this agent doesn't exist; its keys are useless
+                raise SwitchboardError(GONE % self.c["name"], e.code, e.data)
             raise
 
     def _save(self):
@@ -265,7 +328,12 @@ class Agent:
                     raise
                 out.append({"to": p["name"], "status": "not sent: " + str(e)})
                 continue
-            out.append({"to": p["name"], "status": self._post(p, blob)})
+            try:
+                out.append({"to": p["name"], "status": self._post(p, blob)})
+            except SwitchboardError as e:
+                if name or e.code in ("removed_by_owner", "invalid_token"):
+                    raise
+                out.append({"to": p["name"], "status": "not sent: " + str(e)})  # one bad send doesn't stop the rest
         return out
 
     def leave(self):

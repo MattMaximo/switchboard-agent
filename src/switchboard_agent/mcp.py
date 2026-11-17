@@ -1,7 +1,9 @@
 """Local MCP server (stdio) exposing Switchboard tools.
 
 Pin it to one agent so several agents on one computer keep their own identity, e.g.:
-    claude mcp add switchboard -- uvx switchboard-agent mcp --as "Claude"
+    claude mcp add switchboard -- uvx switchboard-agent@latest mcp --as "Claude Code"
+Then "join my Switchboard with code X" is enough: the name defaults to the --as value, and the new
+profile remembers it, so a restart with the same config finds the agent even if the network renamed it.
 """
 import json
 import secrets
@@ -9,7 +11,7 @@ import sys
 import traceback
 
 from . import __version__, profiles
-from .client import Agent, SwitchboardError, clean, join
+from .client import Agent, SwitchboardError, clean, join, join_lines, ping_line
 
 SUPPORTED = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 
@@ -25,9 +27,9 @@ TOOLS = [
                     "and gives you a network code or invite link. Keys are created locally and never leave this machine.",
      "inputSchema": {"type": "object", "properties": {
          "code": {"type": "string", "description": "Network code or invite link from the user, e.g. vnygy9jums"},
-         "name": {"type": "string", "description": "Name to appear as, e.g. Claude"},
+         "name": {"type": "string", "description": "Name to appear as, e.g. Claude. Optional when this server was started with --as."},
          "kind": {"type": "string", "description": "What kind of agent this is, e.g. Claude Code"}},
-         "required": ["code", "name"]}},
+         "required": ["code"]}},
     {"name": "switchboard_status",
      "description": "Show this agent's Switchboard identity and the other agents on the network, with online status.",
      "inputSchema": {"type": "object", "properties": {}}},
@@ -116,26 +118,38 @@ class Server:
         self.slug = a.c["slug"]  # never drift to another agent's profile later
         return a
 
-    def call(self, name, args):
-        if name == "switchboard_join":
-            want = (self.as_name or "").strip()
-            if want and any(want.lower() in (p["name"].lower(), (p.get("asked_name") or "").lower()) or p["slug"] == profiles.slugify(want)
-                            for p in profiles.all_profiles()):
+    def _refuse_live_twin(self, want):
+        """Joining under this server's --as would collide with a profile another app may be using.
+        A profile whose agent is gone (removed or reset) is cleaned up and doesn't count."""
+        key = want.lower()
+        for p in profiles.all_profiles():
+            if key in (p["name"].lower(), (p.get("asked_name") or "").lower(), (p.get("mcp_as") or "").lower()) \
+                    or p["slug"] == profiles.slugify(want):
+                try:
+                    Agent(p["slug"], upgrade=False).me()
+                except SwitchboardError as e:
+                    if e.code in ("removed_by_owner", "invalid_token"):
+                        continue  # dead: Agent deleted its keys; join may reuse the name
                 raise SwitchboardError(
                     'This MCP server is set to --as "%s", but an agent with that name already exists on this computer '
                     "(another app may use it). Give this app its own name: change --as in its MCP config to a new name "
                     "(e.g. \"%s 2\"), restart it, and join under that name." % (want, want), "name_taken")
-            r = join(args["code"], args["name"], args.get("kind") or "Agent")
+
+    def call(self, name, args):
+        if name == "switchboard_join":
+            want = (self.as_name or "").strip()
+            nm = (args.get("name") or "").strip() or want
+            if not nm:
+                raise SwitchboardError("Say what name to join as (name).")
+            if want:
+                self._refuse_live_twin(want)
+            r = join(args["code"], nm, args.get("kind") or "Agent", mcp_as=want or None)
             self.slug = r["slug"]  # pin this server to the agent it just created
-            msg = 'Joined %s\'s Switchboard as "%s" (key fingerprint %s).' % (r["owner"], r["name"], r["fingerprint"])
-            if want and r["slug"] != profiles.slugify(want):
-                msg += (' Important: change this app\'s MCP config to --as "%s" and restart it, or after a restart it '
-                        "won't find this agent." % r["slug"])
-            elif not want:
-                msg += ' Add --as "%s" to this app\'s MCP config so it keeps using this agent after a restart.' % r["slug"]
-            if not r.get("approved", True):
-                msg += " Waiting for the owner to approve this agent on their dashboard before it can send or receive."
-            return msg
+            lines = join_lines(r, inbox="switchboard_inbox", as_hint=False)
+            if r.get("several") and not want:
+                lines.append('Several agents share this computer: add --as "%s" to this app\'s MCP config so it '
+                             "keeps using this agent after a restart." % r["as"])
+            return "\n".join(lines)
         a = self.agent()
         if name == "switchboard_status":
             me = a.me()
@@ -151,8 +165,7 @@ class Server:
             rs = a.ping(args.get("name") or None)
             if not rs:
                 return "No other agents connected yet."
-            return "\n".join("Ping to %s: %s" % (r["to"], "delivered" if r["status"] == "delivered" else r["status"] if r["status"].startswith("not sent") else "waiting in its mailbox until it's online") for r in rs) \
-                + "\nCheck switchboard_inbox in a few seconds for replies."
+            return "\n".join(ping_line(r) for r in rs) + "\nReplies will show up in switchboard_inbox."
         if name == "switchboard_send":
             if args.get("to") or args.get("all"):
                 to = args.get("to") or []
