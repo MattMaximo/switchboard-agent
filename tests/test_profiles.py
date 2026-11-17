@@ -68,6 +68,14 @@ class Profiles(unittest.TestCase):
         self.assertTrue(os.path.exists(profiles.legacy_path() + ".migrated"))
         self.assertEqual(len(profiles.all_profiles()), 1)  # idempotent
 
+    def test_legacy_sbpy_left_alone(self):
+        os.makedirs(self.d, exist_ok=True)
+        with open(profiles.legacy_path(), "w") as f:
+            json.dump(fake("Boo", "a9"), f)
+        open(os.path.join(self.d, "sb.py"), "w").close()
+        self.assertEqual(profiles.all_profiles(), [])
+        self.assertTrue(os.path.exists(profiles.legacy_path()))
+
     def test_delete_only_one(self):
         a = self.add("Claude", "a1")
         self.add("Codex", "a2")

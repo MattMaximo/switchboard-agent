@@ -69,7 +69,7 @@ def join(code, name, kind="Agent", host=None):
     """Create a NEW local profile and register it. Never touches other agents' profiles."""
     profiles.migrate_legacy()  # so a legacy identity is preserved before we add another
     link = (code or "").strip()
-    if not host and link.startswith("https://") and "/j/" in link:
+    if not host and link.startswith(("https://", "http://localhost:", "http://127.0.0.1:")) and "/j/" in link:
         host = link.split("/j/")[0]
     host = (host or os.environ.get("SWITCHBOARD_HOST") or DEFAULT_HOST).rstrip("/")
     v0priv, v0pub = crypto0.new_keypair()

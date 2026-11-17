@@ -117,7 +117,8 @@ def send(url, text, plain=False, name=None, ident=None, return_immediately=True,
 
 def get_task(url, task_id, card=None):
     card = card or fetch_card(url)
-    return rpc(endpoint(card), "GetTask", {"id": task_id}).get("task") or {}
+    r = rpc(endpoint(card), "GetTask", {"id": task_id})
+    return r if "status" in r else (r.get("task") or {})  # GetTask returns the Task itself
 
 
 def read_reply(task, card, ident=None):

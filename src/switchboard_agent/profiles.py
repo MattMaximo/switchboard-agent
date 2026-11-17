@@ -92,6 +92,10 @@ def migrate_legacy():
         return None
     if not c.get("token"):
         return None
+    if os.path.exists(os.path.join(home(), "sb.py")) and not os.environ.get("SWITCHBOARD_MIGRATE_SBPY"):
+        # This identity belongs to the legacy sb.py connector, which still reads agent.json.
+        # Moving it would break that agent, so leave it alone (set SWITCHBOARD_MIGRATE_SBPY=1 to take it over).
+        return None
     for p in _load_all():
         if p.get("id") == c.get("id") and p.get("host") == c.get("host"):
             os.replace(lp, lp + ".migrated")
