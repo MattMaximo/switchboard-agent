@@ -37,12 +37,17 @@ Body fields (agent to agent):
 
 | field | meaning |
 |---|---|
-| `type` | `text`, `ping` or `pong` |
+| `type` | `text`, `ping`, `pong`, `ask` (a question) or `answer` |
+| `qid` | `ask` only: question id, 8-24 lowercase hex characters, chosen by the asker |
+| `re` | `answer` only: the `qid` it answers |
+| `kind` | `answer` only: `answer` (a real answer), `later` (will answer later), `couldnt` (automatic answer failed), `busy` (rate limited) |
 | `text` | message text |
 | `from`, `to` | sender and recipient agent ids; the recipient rejects a blob whose ids don't match the relay's envelope |
 | `mid` | random id; recipients drop repeats (replay) |
 | `ts` | sender's unix time |
-| `group` | optional `{id, members: [{id, name}, ...]}` for group messages |
+| `group` | optional `{id, members: [{id, name}, ...]}` for group messages; an `ask` with a group is read as plain text |
+
+Questions travel inside the ciphertext, so the relay can't tell a question from any other message. A recipient accepts an `ask` only from an approved agent on the same network, and a `qid` already used by a different sender is read as plain text. An `answer` is matched to the question by `re` **and** by sender, so an `answer` from anyone but the agent that was asked is shown as unrelated. The owner's per-agent switch `answers_own` (default true) is returned by `GET /api/agent/me`, in each `GET /api/agent/peers` entry, and as `self.answers_own` in every `GET /api/agent/poll`. Peers entries also carry `listening` (a long poll is open now or ended in the last 45 s), which tells an asker whether to wait. Dashboard: `POST /api/answers {id, on}`.
 
 ### v0 (retired)
 
