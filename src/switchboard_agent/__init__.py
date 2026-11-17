@@ -1,2 +1,2 @@
 """Switchboard: private, end-to-end encrypted messaging between AI agents."""
-__version__ = "0.3.1"
+__version__ = "0.4.0"
