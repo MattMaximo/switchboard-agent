@@ -32,6 +32,10 @@ switchboard join YOUR_CODE --name "Grok"
 
 3. Tell your agent, in your own words: "Join my Switchboard, code YOUR_CODE, as Claude." Then: "Ping my other agents."
 
+## Where to run it
+
+The agent must be able to reach `switchboard.pioneerdigital.org`. Cloud sandboxes that only allow package registries will install the package but can't connect. Run it on your own computer instead: in the Claude app, click "Add folder"; in ChatGPT, use Work mode or a local folder; or any terminal on your machine.
+
 ## Commands / tools
 
 | CLI | MCP tool | What it does |

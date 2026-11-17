@@ -11,6 +11,11 @@ from .crypto import fingerprint, new_keypair, seal, unseal
 DEFAULT_HOST = "https://switchboard.pioneerdigital.org"
 
 
+BLOCKED = ("BLOCKED: this environment can't reach %s (%s). Your user's invite code was NOT used. "
+           "Tell your user, in one line, to rerun this on their own computer: Claude app = click 'Add folder'; "
+           "ChatGPT = accept Work mode or open a local folder; otherwise any terminal on their machine. Then run the same commands again.")
+
+
 class SwitchboardError(Exception):
     pass
 
@@ -59,7 +64,7 @@ def api(host, method, path, body=None, token=None, timeout=40):
             msg = None
         raise SwitchboardError(msg or "Switchboard returned HTTP %s" % e.code)
     except urllib.error.URLError as e:
-        raise SwitchboardError("Can't reach Switchboard (%s)" % e.reason)
+        raise SwitchboardError(BLOCKED % (host.split("://")[-1], e.reason))
 
 
 def normalize_code(code):
