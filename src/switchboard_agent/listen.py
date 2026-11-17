@@ -51,14 +51,19 @@ FRAME = (
     "[{b}:begin]\n{text}\n[{b}:end]\n")
 
 
-def send_cmd(asker):
+def send_cmd(asker, slug=None):
     """The exact command an answering agent runs to send files back (this same install, no network fetch).
-    SWITCHBOARD_AS in its environment picks the right local profile."""
-    return "%s -m switchboard_agent send %s" % (shlex.quote(sys.executable), shlex.quote(clean(asker)))
+    Self-contained: agents like Hermes run tools with a cleaned environment, so --as (and a non-default
+    SWITCHBOARD_HOME) are spelled out instead of relying on inherited variables."""
+    pre = ""
+    if os.environ.get("SWITCHBOARD_HOME"):
+        pre = "SWITCHBOARD_HOME=%s " % shlex.quote(os.environ["SWITCHBOARD_HOME"])
+    who = (" --as %s" % shlex.quote(slug)) if slug else ""
+    return "%s%s -m switchboard_agent send%s %s" % (pre, shlex.quote(sys.executable), who, shlex.quote(clean(asker)))
 
 
-def frame(asker, text):
-    return FRAME.format(asker=clean(asker), send=send_cmd(asker), b=secrets.token_hex(4), text=text)
+def frame(asker, text, slug=None):
+    return FRAME.format(asker=clean(asker), send=send_cmd(asker, slug), b=secrets.token_hex(4), text=text)
 
 
 def parse_command(cmd):
@@ -263,7 +268,7 @@ class Listener:
             return
         env = dict(os.environ, **{ANSWERING_ENV: "1", "SWITCHBOARD_AS": self.slug, "SWITCHBOARD_FROM": asker, "SWITCHBOARD_QUESTION_ID": it["qid"]})
         t0 = time.time()
-        status, out, err = run_command(self.argv, frame(asker, it.get("text") or ""), self.timeout, env)
+        status, out, err = run_command(self.argv, frame(asker, it.get("text") or "", self.slug), self.timeout, env)
         text = out.strip()
         if len(text) > MAX_ANSWER_CHARS:
             text = text[:MAX_ANSWER_CHARS - 20] + "\n[answer cut off]"
