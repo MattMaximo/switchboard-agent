@@ -64,6 +64,9 @@ class V1(unittest.TestCase):
             crypto1.unseal(self.b[0], self.b[1], self.a[1], blob)
         self.assertEqual(crypto0.unseal(q0, Q0, P0, blob), self.msg)
 
+    def test_v0_fingerprint_odd_hex(self):
+        self.assertEqual(crypto0.fingerprint("abc"), crypto0.fingerprint("0abc"))
+
     def test_proofs_verify(self):
         from cryptography.hazmat.primitives.asymmetric import ed25519
         pk = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(self.a[1])[32:])

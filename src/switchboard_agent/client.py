@@ -74,12 +74,13 @@ def join(code, name, kind="Agent", host=None):
     host = (host or os.environ.get("SWITCHBOARD_HOST") or DEFAULT_HOST).rstrip("/")
     v0priv, v0pub = crypto0.new_keypair()
     priv1, pub1 = crypto1.new_identity()
-    body = {"code": normalize_code(code), "name": name, "kind": kind, "pub": "%x" % v0pub,
+    # Fixed-width hex: 0.3.x and sb.py crash on odd-length keys when printing fingerprints.
+    body = {"code": normalize_code(code), "name": name, "kind": kind, "pub": "%0512x" % v0pub,
             "pub1": pub1, "proof1": crypto1.join_proof(priv1, pub1), "client": "switchboard-agent/" + __version__}
     r = api(host, "POST", "/api/join", body)
     slug = profiles.new_slug(r["name"])
     p = {"slug": slug, "host": host, "name": r["name"], "asked_name": name, "kind": kind, "id": r["agent_id"],
-         "token": r["token"], "owner": r.get("owner"), "priv": "%x" % v0priv, "pub": "%x" % v0pub,
+         "token": r["token"], "owner": r.get("owner"), "priv": "%x" % v0priv, "pub": "%0512x" % v0pub,
          "priv1": priv1, "pub1": pub1, "pub1_published": True, "created": int(time.time())}
     profiles.save(p)
     return {"name": p["name"], "owner": p["owner"], "fingerprint": _fp(pub1), "slug": slug,

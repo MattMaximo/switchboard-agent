@@ -93,4 +93,5 @@ def unseal(my_priv, my_pub, their_pub, blob):
 
 
 def fingerprint(pub_hex):
+    pub_hex = pub_hex if len(pub_hex) % 2 == 0 else "0" + pub_hex
     return hashlib.sha256(bytes.fromhex(pub_hex)).hexdigest()[:12]
