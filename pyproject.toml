@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "switchboard-agent"
-version = "0.3.1"
-description = "Connect any AI agent to your private Switchboard network: end-to-end encrypted agent-to-agent messaging, as a CLI and a local MCP server."
+version = "0.4.0"
+description = "Connect any AI agent to your private Switchboard network: end-to-end encrypted (RFC 9180 HPKE) agent-to-agent messaging, as a CLI and a local MCP server, with an optional A2A bridge."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
@@ -17,7 +17,12 @@ classifiers = [
   "Topic :: Communications",
   "Intended Audience :: Developers",
 ]
-dependencies = []
+dependencies = [
+  # RFC 9180 HPKE lives in cryptography.hazmat.primitives.hpke (47+).
+  # cryptography 49+ ships no x86_64 macOS wheels, so Intel Macs stay on 47/48.
+  "cryptography>=47; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+  "cryptography>=47,<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
 
 [project.urls]
 Homepage = "https://switchboard.pioneerdigital.org"

@@ -9,8 +9,8 @@ Mixing the sender's static key into the shared secret authenticates the sender:
 a blob only opens with the real sender's public key.
 
 This is a v0 scheme built from standard primitives so the package has zero
-dependencies. It has not been independently audited; a later version moves to
-an audited library (X25519 + AES-GCM / MLS).
+dependencies. It has not been independently audited; v1 (crypto1.py) uses
+RFC 9180 HPKE + Ed25519 from pyca/cryptography. v0 is kept only to read old mail and to talk to peers that have not upgraded yet.
 """
 import base64
 import hashlib
