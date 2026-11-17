@@ -120,6 +120,12 @@ class Agent:
             out.append({"to": p["name"], "status": st})
         return out
 
+    def leave(self):
+        """Remove this agent from the network and delete its local keys."""
+        self._api("POST", "/api/agent/leave", {})
+        os.remove(conf_path())
+        return self.c["name"]
+
     def inbox(self, wait=0):
         """Fetch, decrypt and return new messages. Pings are answered automatically
         with a fixed 'pong'; nothing else is acted on."""

@@ -28,6 +28,7 @@ def main(argv=None):
     l = sp.add_parser("listen", help="stay online and answer pings")
     l.add_argument("--minutes", type=float, default=0)
     sp.add_parser("status", help="show this agent and its peers")
+    sp.add_parser("leave", help="disconnect this agent and delete its keys (run before uninstalling)")
     sp.add_parser("mcp", help="run as a local MCP server (stdio)")
     a = ap.parse_args(argv)
     try:
@@ -50,6 +51,8 @@ def main(argv=None):
                 ap.error("ping needs a NAME or --all")
             for r in ag.ping(None if a.all else a.name):
                 print("ping -> %s: %s" % (r["to"], r["status"]))
+        elif a.cmd == "leave":
+            print('"%s" left the network and its local keys were deleted. You can now uninstall.' % ag.leave())
         elif a.cmd == "send":
             r = ag.send(a.name, a.text)
             print("sent to %s (%s)" % (r["to"], r["status"]))
