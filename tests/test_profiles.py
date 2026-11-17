@@ -293,17 +293,17 @@ class Join(Home):
         r, lines = self.join(srv)
         self.assertEqual(srv.sent, ["b1", "b2"])
         self.assertEqual(lines, ['Connected to Matt\'s Switchboard as "Grok".',
-                                 "Said hi to 2 agents: Boo, Claude. Their replies will show up in: " + client.inbox_cmd()])
+                                 "Said hi to 2 agents: Boo, Claude. Their replies will show up in: " + client.inbox_cmd(), USAGE])
 
     def test_join_alone(self):
         r, lines = self.join(FakeServer(["Grok"], ["a2"]))
-        self.assertEqual(lines, ['Connected to Matt\'s Switchboard as "Grok".', "No other agents on this network yet."])
+        self.assertEqual(lines, ['Connected to Matt\'s Switchboard as "Grok".', "No other agents on this network yet.", USAGE])
 
     def test_hello_failure_keeps_join(self):
         srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1")], fail_send=True)
         r, lines = self.join(srv)
         self.assertEqual(profiles.choose()["id"], "a2")
-        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[2:], [USAGE])
         self.assertEqual(lines[1], "Couldn't say hi to Boo: Network error (simulated)")
 
     def test_pending_agent_does_not_ping(self):
@@ -315,7 +315,7 @@ class Join(Home):
     def test_no_hello_flag(self):
         srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1")])
         r, lines = self.join(srv, hello=False)
-        self.assertEqual((srv.sent, len(lines)), ([], 1))
+        self.assertEqual((srv.sent, lines[1:]), ([], [USAGE]))
 
     def test_several_agents_inbox_line_has_as(self):
         self.add("Codex", "a1")
@@ -364,7 +364,10 @@ class Join(Home):
             from switchboard_agent import cli
             cli.main(["join", "abcdefgh", "--name", "Grok", "--host", "https://x"])
         self.assertEqual(buf.getvalue().splitlines(), ['Connected to Matt\'s Switchboard as "Grok".',
-                                                       "Said hi to 1 agent: Boo. Their replies will show up in: " + client.inbox_cmd()])
+                                                       "Said hi to 1 agent: Boo. Their replies will show up in: " + client.inbox_cmd(), USAGE])
+
+
+USAGE = 'Message an agent: %s send NAME "text". Send files: %s send NAME --file PATH.' % (client.cmd_prefix(), client.cmd_prefix())
 
 
 class Relay:
