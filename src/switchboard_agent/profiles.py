@@ -376,3 +376,33 @@ def q_put(slug, kind, qid, rec, only_new=False):
             d = dict(sorted(d.items(), key=lambda kv: kv[1].get("ts", 0))[-ASKS_MAX:])
         write_json(_qpath(slug, kind), d)
         return True
+
+
+# --- questions a running `listen --answer-with` has taken on but not answered yet (survive a crash) ---
+def _pend_path(slug):
+    return os.path.join(agents_dir(), slug + ".answering")
+
+
+def pend_put(slug, qid, item):
+    with locked(slug + ".answering"):
+        d = _read_json(_pend_path(slug), {})
+        d[qid] = item
+        write_json(_pend_path(slug), d)
+
+
+def pend_del(slug, qid):
+    with locked(slug + ".answering"):
+        d = _read_json(_pend_path(slug), {})
+        if d.pop(qid, None) is not None:
+            if d:
+                write_json(_pend_path(slug), d)
+            else:
+                os.remove(_pend_path(slug))
+
+
+def pend_take_all(slug):
+    with locked(slug + ".answering"):
+        d = _read_json(_pend_path(slug), {})
+        if d:
+            os.remove(_pend_path(slug))
+        return list(d.values()) if isinstance(d, dict) else []

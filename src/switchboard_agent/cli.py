@@ -186,15 +186,16 @@ def main(argv=None):
             end = time.time() + a.minutes * 60 if a.minutes else None
             while end is None or time.time() < end:
                 try:
-                    items = ag._fetch(25)
-                    if items:
-                        lis.handle(items)
-                        for line in _listen_lines(items):
-                            print(line, flush=True)
+                    items = lis.take_held() + ag._fetch(25, keep=lis.handle)
+                    for line in _listen_lines(items):
+                        print(line, flush=True)
                 except SwitchboardError as e:
                     if e.code in ("removed_by_owner", "key_conflict", "invalid_token") or str(e).startswith("This Switchboard server"):
                         raise
                     print("(%s; retrying)" % e, file=sys.stderr, flush=True)
+                    time.sleep(5)
+                except Exception as e:  # stay online whatever one round throws
+                    print("(unexpected error: %s: %s; retrying)" % (type(e).__name__, clean(e, 200)), file=sys.stderr, flush=True)
                     time.sleep(5)
     except (SwitchboardError, a2a_mod.A2AError) as e:
         sys.exit("Switchboard: %s" % e)

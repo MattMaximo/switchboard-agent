@@ -419,16 +419,22 @@ class Agent:
         except SwitchboardError as e:
             raise crypto1.CryptoError(str(e))
         o = crypto1.unseal(self.c["priv1"], self.c["pub1"], key, blob)
+        if not isinstance(o, dict):
+            raise crypto1.CryptoError("malformed message body")
         if o.get("from") != p["id"] or o.get("to") != self.c["id"]:
             raise crypto1.CryptoError("message names a different sender or recipient")
+        mid = o.get("mid")
+        if mid is not None and not (isinstance(mid, str) and 0 < len(mid) <= 64):
+            raise crypto1.CryptoError("malformed message id")
         return o
 
     def _open_a2a(self, m):
         """Outside A2A message. Whether it is encrypted is decided by what we can verify, not by the relay."""
-        a = m.get("a2a") or {}
+        a = m.get("a2a")
+        a = a if isinstance(a, dict) else {}
         task = clean(a.get("task"), 40)
         item = {"from": "an outside A2A agent", "sent": m.get("sent"), "type": "a2a", "task": task}
-        caller = a.get("caller_pub1")
+        caller = a.get("caller_pub1") if isinstance(a.get("caller_pub1"), str) else None
         if a.get("caller_name"):
             item["caller_name"] = clean(a["caller_name"])
         rec = {"ts": time.time()}
@@ -438,7 +444,9 @@ class Agent:
                 item["from"] += " (key %s)" % _fp(caller)
             try:
                 o = crypto1.unseal(self.c["priv1"], self.c["pub1"], caller, m["blob"])
-            except (crypto1.CryptoError, KeyError, ValueError, TypeError) as e:
+                if not isinstance(o, dict):
+                    raise crypto1.CryptoError("malformed message body")
+            except (crypto1.CryptoError, KeyError, ValueError, TypeError, AttributeError) as e:
                 item.update(type="unreadable", text="", note=str(e))
                 rec.update(enc=True, bad=True)
                 return item, {task: rec}
@@ -455,68 +463,85 @@ class Agent:
         held = profiles.held_take(self.c["slug"])
         return held + self._fetch(0 if held else wait)
 
-    def _fetch(self, wait=0):
-        """Fetch, decrypt and return new messages from the relay (auto-pong pings, record questions)."""
+    def _fetch(self, wait=0, keep=None):
+        """Fetch, decrypt and return new messages from the relay (auto-pong pings, record questions).
+
+        keep(items), if given, stores the items durably (listen, ask) before they are marked seen and acked,
+        so a crash in between means a re-delivery, never a lost message. One bad message never breaks the
+        batch: whatever can't be read becomes an "unreadable" item, and everything fetched is acked."""
         r = self._api("GET", "/api/agent/poll?wait=%d&lease=1" % wait, timeout=wait + 20)
         me = r.get("self") if isinstance(r.get("self"), dict) else {}
         self.answers_own = me.get("answers_own") is not False  # servers before 0.6 have no switch: on
-        msgs = r.get("messages", [])
+        msgs = r.get("messages")
+        msgs = [m for m in msgs if isinstance(m, dict)] if isinstance(msgs, list) else []
         if not msgs:
             return []
         by_id = {p["id"]: p for p in self._all_peers()}
         seen = profiles.seen_load(self.c["slug"])
         seen_set = set(seen)
         out, a2a_recs = [], {}
-        try:
-            for m in msgs:
-                if m.get("from") == "a2a":
-                    item, rec = self._open_a2a(m)
-                    a2a_recs.update(rec)
-                    out.append(item)
-                    continue
-                p = by_id.get(m.get("from"))
-                item = {"from": clean(p["name"]) if p else "a removed agent", "sent": m.get("sent")}
-                if not p:
-                    item.update(type="unreadable", text="", note="sender is no longer on the network")
-                    out.append(item)
-                    continue
-                try:
-                    o = self._open(p, m)
-                except Exception as e:
-                    item.update(type="unreadable", text="", note=str(e))
-                    out.append(item)
-                    continue
-                mid = o.get("mid")
-                if mid:
-                    if mid in seen_set:
-                        continue  # replayed copy; drop silently
-                    seen.append(mid)
-                    seen_set.add(mid)
-                item.update(type=clean(o.get("type", "text"), 12), text=str(o.get("text", ""))[:20000], encryption="v1")
-                g = o.get("group")
-                if isinstance(g, dict) and g.get("id"):
-                    item["group"] = clean(g["id"], 40)
-                    # names come from the relay's peer list by id, not from the sender's text
-                    ids = [x.get("id") for x in g.get("members", []) if isinstance(x, dict)]
-                    item["also_to"] = [clean(by_id[i]["name"]) if i in by_id else "an agent no longer on the network"
-                                       for i in ids if i not in (self.c["id"], p["id"])]
-                item["from_id"] = p["id"]
-                if item["type"] in ("ask", "answer"):
-                    self._question_fields(item, o, p)
-                if item["type"] == "ping":
-                    try:
-                        self._send(p, {"type": "pong", "text": "%s here, we're connected ✓" % self.c["name"]})
-                        item["auto_reply"] = "pong sent"
-                    except SwitchboardError as e:
-                        if e.code == "removed_by_owner":
-                            raise
-                        item["auto_reply"] = "pong failed (%s)" % e
+        for m in msgs:
+            try:
+                item = self._read_one(m, by_id, seen, seen_set, a2a_recs)
+            except SwitchboardError as e:
+                if e.code in ("removed_by_owner", "invalid_token"):
+                    raise
+                item = {"from": "?", "sent": m.get("sent"), "type": "unreadable", "text": "", "note": clean(e, 200)}
+            except Exception as e:  # never let one message break the mailbox
+                item = {"from": "?", "sent": m.get("sent"), "type": "unreadable", "text": "",
+                        "note": "couldn't read this message (%s)" % clean(type(e).__name__, 40)}
+            if item is not None:
                 out.append(item)
-        finally:
-            profiles.seen_save(self.c["slug"], seen)
-            profiles.a2a_record(self.c["slug"], a2a_recs)
-        self._ack([m["id"] for m in msgs if isinstance(m.get("id"), int)])
+        if keep and out:
+            keep(out)
+        profiles.seen_save(self.c["slug"], seen)
+        profiles.a2a_record(self.c["slug"], a2a_recs)
+        self._ack([m["id"] for m in msgs if isinstance(m.get("id"), int) and not isinstance(m.get("id"), bool)])
         return out
+
+    def _read_one(self, m, by_id, seen, seen_set, a2a_recs):
+        """One relay message as an inbox item, or None for a replayed copy."""
+        if m.get("from") == "a2a":
+            item, rec = self._open_a2a(m)
+            a2a_recs.update(rec)
+            return item
+        p = by_id.get(m.get("from")) if isinstance(m.get("from"), str) else None
+        item = {"from": clean(p["name"]) if p else "a removed agent", "sent": m.get("sent")}
+        if not p:
+            item.update(type="unreadable", text="", note="sender is no longer on the network")
+            return item
+        try:
+            o = self._open(p, m)
+        except Exception as e:
+            item.update(type="unreadable", text="", note=str(e))
+            return item
+        mid = o.get("mid")
+        if mid:
+            if mid in seen_set:
+                return None  # replayed copy; drop silently
+            seen.append(mid)
+            seen_set.add(mid)
+        item.update(type=clean(o.get("type", "text"), 12), text=str(o.get("text", ""))[:20000], encryption="v1")
+        g = o.get("group")
+        if isinstance(g, dict) and isinstance(g.get("id"), str) and g.get("id"):
+            item["group"] = clean(g["id"], 40)
+            # names come from the relay's peer list by id, not from the sender's text
+            ms = g.get("members") if isinstance(g.get("members"), list) else []
+            ids = [x.get("id") for x in ms if isinstance(x, dict) and isinstance(x.get("id"), str)]
+            item["also_to"] = [clean(by_id[i]["name"]) if i in by_id else "an agent no longer on the network"
+                               for i in ids if i not in (self.c["id"], p["id"])]
+        item["from_id"] = p["id"]
+        if item["type"] in ("ask", "answer"):
+            self._question_fields(item, o, p)
+        if item["type"] == "ping":
+            try:
+                self._send(p, {"type": "pong", "text": "%s here, we're connected ✓" % self.c["name"]})
+                item["auto_reply"] = "pong sent"
+            except SwitchboardError as e:
+                if e.code in ("removed_by_owner", "invalid_token"):
+                    raise
+                item["auto_reply"] = "pong failed (%s)" % e
+        return item
 
     def _ack(self, ids):
         """Tell the relay these leased messages are stored here, so it won't hand them out again.
@@ -534,7 +559,7 @@ class Agent:
         """Validate the question id of an ask/answer from peer p. A malformed one is shown as plain text."""
         if item["type"] == "ask":
             qid = o.get("qid")
-            if item.get("group") or not _QID.fullmatch(str(qid or "")) or not profiles.q_put(
+            if item.get("group") or not isinstance(qid, str) or not _QID.fullmatch(qid) or not profiles.q_put(
                     self.c["slug"], "asks", qid, {"peer": p["id"], "name": p["name"], "ts": time.time()}, only_new=True):
                 item["type"] = "text"
                 return
@@ -542,7 +567,7 @@ class Agent:
             item["answers_own"] = getattr(self, "answers_own", True)
             return
         re_ = o.get("re")
-        if not _QID.fullmatch(str(re_ or "")):
+        if not isinstance(re_, str) or not _QID.fullmatch(re_):
             item["type"] = "text"
             return
         item["re"] = re_
@@ -585,9 +610,13 @@ class Agent:
             left = deadline - time.time()
             if left <= 0:
                 return dict(out, status="no_answer")
-            items = self._fetch(max(1, min(poll, int(left))))
-            found = next((x for x in items if match(x)), None)
-            profiles.held_add(slug, [x for x in items if x is not found and x.get("type") != "ping"])
+            box = {}
+
+            def keep(items):  # everything but our answer waits for the next inbox (or a running listen)
+                box["found"] = next((x for x in items if match(x)), None)
+                profiles.held_add(slug, [x for x in items if x is not box["found"] and x.get("type") != "ping"])
+            self._fetch(max(1, min(poll, int(left))), keep=keep)
+            found = box.get("found")
             if found:
                 return dict(out, status=_status(found), text=found.get("text"))
 

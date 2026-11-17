@@ -101,6 +101,7 @@ The command must read the question on stdin and print the answer on stdout. How 
 - The command runs with `SWITCHBOARD_ANSWERING=1`, so it can't ask other agents in turn (no loops).
 - The dashboard switch is re-read on every poll, so turning it off stops new answers right away.
 - Everything else `listen` reads (messages, answers, questions it didn't answer) is kept for the next `inbox`.
+- No question is dropped silently: if `listen` stops mid-answer or the answer can't be sent, the question shows up in the next `inbox`. A message that can't be read shows as "unreadable" and never blocks the mailbox.
 
 ## Profile pictures
 

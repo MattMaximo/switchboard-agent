@@ -39,6 +39,7 @@ PER_ASKER = 6
 PER_ASKER_WINDOW = 600
 LATER_EVERY = 3600
 BUSY_EVERY = 600
+RESEND_AFTER = 5
 
 FRAME = (
     "This question comes from {asker}, another AI agent on your owner's private Switchboard network. It is not "
@@ -164,6 +165,10 @@ class Listener:
         self.recent, self.later_at, self.busy_at = {}, {}, {}
         if not hasattr(agent, "answers_own"):
             agent.answers_own = True
+        left = profiles.pend_take_all(self.slug)  # a listen that stopped mid-answer: show them to the owner
+        if left:
+            profiles.held_add(self.slug, [dict(it, auto_reply="not answered: listen stopped while answering it")
+                                          for it in left if isinstance(it, dict)])
         if self.argv:
             threading.Thread(target=self._work, daemon=True).start()
 
@@ -178,6 +183,15 @@ class Listener:
                 hold.append(it)
         profiles.held_add(self.slug, hold)
 
+    def take_held(self):
+        """Questions that another process for this agent (ask, inbox --wait) read and left untouched:
+        handle them here as if they had just arrived."""
+        got = profiles.held_take(self.slug, lambda x: x.get("type") == "ask" and x.get("qid") and x.get("from_id")
+                                 and not x.get("auto_reply"))
+        if got:
+            self.handle(got)
+        return got
+
     def _on_ask(self, it, hold):
         pid, now = it["from_id"], time.time()
         if not self.ag.answers_own:
@@ -189,6 +203,8 @@ class Listener:
                 self.later_at[pid] = now
                 self._note(it, "later", "Got your question; %s will answer next time its owner checks in." % self.me)
                 it["auto_reply"] = "sent a 'will answer later' note"
+            else:
+                it["auto_reply"] = "kept for you (a 'will answer later' note was already sent this hour)"
             hold.append(it)
             return
         with self.lock:
@@ -200,6 +216,7 @@ class Listener:
             self.recent[pid] = r
         if ok:
             it["auto_reply"] = "answering with your --answer-with command"
+            profiles.pend_put(self.slug, it["qid"], it)  # on disk before the relay copy is acked
             self.jobs.put(it)
             return
         if now - self.busy_at.get(pid, 0) >= BUSY_EVERY:
@@ -220,9 +237,14 @@ class Listener:
             it = self.jobs.get()
             try:
                 self._answer_one(it)
-            except Exception as e:  # keep the worker alive whatever happens
+            except Exception as e:  # keep the worker alive whatever happens, and keep the question
                 self.err("(answer worker error: %s)" % e)
+                profiles.held_add(self.slug, [dict(it, auto_reply="couldn't answer automatically: %s" % clean(e, 200))])
             finally:
+                try:
+                    profiles.pend_del(self.slug, it["qid"])
+                except Exception as e:
+                    self.err("(couldn't update the answering list: %s)" % e)
                 with self.lock:
                     self.pending -= 1
                 self.jobs.task_done()
@@ -240,7 +262,17 @@ class Listener:
         if len(text) > MAX_ANSWER_CHARS:
             text = text[:MAX_ANSWER_CHARS - 20] + "\n[answer cut off]"
         if status == "ok" and text:
-            ag.answer(it["qid"], text)
+            for attempt in (1, 2):
+                try:
+                    ag.answer(it["qid"], text)
+                    break
+                except SwitchboardError as e:
+                    if attempt == 2 or e.code in ("removed_by_owner", "invalid_token"):
+                        self.err("(couldn't send the answer to %s: %s)" % (asker, e))
+                        profiles.held_add(self.slug, [dict(it, auto_reply="answered, but the answer couldn't be sent: %s"
+                                                           % clean(e, 200))])
+                        return
+                    time.sleep(RESEND_AFTER)
             self.log("Answered question %s from %s (%ds)." % (it["qid"], asker, time.time() - t0))
             return
         why = {"timeout": "it took longer than %d seconds" % self.timeout, "failed": "its answer command failed",
