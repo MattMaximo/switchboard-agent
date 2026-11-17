@@ -457,7 +457,7 @@ class Agent:
 
     def _fetch(self, wait=0):
         """Fetch, decrypt and return new messages from the relay (auto-pong pings, record questions)."""
-        r = self._api("GET", "/api/agent/poll?wait=%d" % wait, timeout=wait + 20)
+        r = self._api("GET", "/api/agent/poll?wait=%d&lease=1" % wait, timeout=wait + 20)
         me = r.get("self") if isinstance(r.get("self"), dict) else {}
         self.answers_own = me.get("answers_own") is not False  # servers before 0.6 have no switch: on
         msgs = r.get("messages", [])
@@ -515,8 +515,20 @@ class Agent:
         finally:
             profiles.seen_save(self.c["slug"], seen)
             profiles.a2a_record(self.c["slug"], a2a_recs)
+        self._ack([m["id"] for m in msgs if isinstance(m.get("id"), int)])
         return out
 
+    def _ack(self, ids):
+        """Tell the relay these leased messages are stored here, so it won't hand them out again.
+        Without an ack (this process died first) the relay re-sends them after its lease (30 s); replays are dropped."""
+        if not ids:
+            return
+        try:
+            self._api("POST", "/api/agent/ack", {"ids": ids}, timeout=20)
+        except SwitchboardError as e:
+            if e.code in ("removed_by_owner", "invalid_token"):
+                raise
+            # servers before 0.6 mark messages delivered when polled and have no ack endpoint
     # ---- questions between the owner's own agents ----
     def _question_fields(self, item, o, p):
         """Validate the question id of an ask/answer from peer p. A malformed one is shown as plain text."""
