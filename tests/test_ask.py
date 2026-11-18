@@ -375,7 +375,8 @@ class Surfaces(Base):
         self.assertIn('inbox --as "A"', out)
         inbox = self.run_cli("inbox", "--as", "B")
         self.assertIn("question ", inbox)
-        self.assertIn('switchboard answer ', inbox)
+        self.assertIn(client.cmd_prefix() + ' answer ', inbox)
+        self.assertIn('answer %s "your answer" --as "B"' % [i for i in profiles.q_load("b", "asks")][0], inbox)
         qid = [i for i in profiles.q_load("b", "asks")][0]
         self.assertIn("Answered A's question", self.run_cli("answer", qid, "yes", "--as", "B"))
         self.assertIn("answer to your question %s" % qid, self.run_cli("inbox", "--as", "A"))

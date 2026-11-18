@@ -5,7 +5,7 @@ import time
 
 from . import __version__
 from . import a2a as a2a_mod
-from .client import ASK_WAIT, Agent, SwitchboardError, ask_lines, clean, inbox_cmd, join, join_lines, peer_line, ping_line
+from .client import ASK_WAIT, Agent, SwitchboardError, ask_lines, clean, cmd_prefix, inbox_cmd, join, join_lines, peer_line, ping_line
 from .listen import ANSWER_TIMEOUT, Listener
 from .mcp import _fmt_inbox, files_lines, sent_files_line, serve
 from .profiles import all_profiles
@@ -185,7 +185,8 @@ def main(argv=None):
             print("\n".join(files_lines(ag.files())))
         elif a.cmd == "inbox":
             ag.save_to = a.save_to
-            print(_fmt_inbox(ag.inbox(a.wait), 'switchboard answer %s "your answer"' + _as_flag(a)))
+            # the answer command in the form this agent was started with (a uvx-run cloud bot has no `switchboard` on PATH)
+            print(_fmt_inbox(ag.inbox(a.wait), cmd_prefix() + ' answer %s "your answer"' + _as_flag(a)))
         elif a.cmd == "ask":
             print("\n".join(ask_lines(ag.ask(a.name, a.question, max(0, a.wait)), inbox_cmd(a.as_name))), flush=True)
         elif a.cmd == "answer":
