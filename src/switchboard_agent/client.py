@@ -181,7 +181,12 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=True):
            "as": profiles.as_value(p, ps), "replaced": bool(dead), "hello": None}
     if hello and out["approved"]:
         try:
-            out["hello"] = Agent(p["slug"]).ping()
+            # One hello, not one per agent: pinging everyone woke every sleeping Grok bot (each wake
+            # costs its owner a Grok run) and left N "waiting" badges. Prefer an online peer.
+            ag = Agent(p["slug"])
+            peers = ag.peers()
+            pick = next((x for x in peers if x.get("online")), peers[0] if peers else None)
+            out["hello"] = ag.ping(targets=[pick] if pick else [])
         except Exception as e:  # the join itself worked; report and move on
             out["hello_error"] = str(e)
     return out
@@ -492,8 +497,10 @@ class Agent:
         return sorted(({"id": k, **{x: v.get(x) for x in ("name", "size", "from", "ts", "status", "path", "error")}}
                        for k, v in d.items()), key=lambda r: -(r.get("ts") or 0))
 
-    def ping(self, name=None):
-        targets = self.peers() if not name else [self.find(name)]
+    def ping(self, name=None, targets=None):
+        """targets: peer dicts to ping, reported (not raised) on failure, like ping --all."""
+        if targets is None:
+            targets = self.peers() if not name else [self.find(name)]
         out = []
         for p in targets:
             try:

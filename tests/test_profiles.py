@@ -291,9 +291,9 @@ class Join(Home):
     def test_join_says_hi(self):
         srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1"), peer("Claude", "b2")])
         r, lines = self.join(srv)
-        self.assertEqual(srv.sent, ["b1", "b2"])
+        self.assertEqual(srv.sent, ["b1"])  # one hello, not one per agent
         self.assertEqual(lines, ['Connected to Matt\'s Switchboard as "Grok".',
-                                 "Said hi to 2 agents: Boo, Claude. Their replies will show up in: " + client.inbox_cmd(), USAGE])
+                                 "Said hi to 1 agent: Boo. Their replies will show up in: " + client.inbox_cmd(), USAGE])
 
     def test_join_alone(self):
         r, lines = self.join(FakeServer(["Grok"], ["a2"]))
