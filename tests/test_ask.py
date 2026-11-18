@@ -401,5 +401,16 @@ class Surfaces(Base):
         self.assertIn("B: online, doesn't answer questions automatically", self.run_cli("status", "--as", "A"))
 
 
+class CmdPrefix(unittest.TestCase):
+    def test_uvx_cache_folder_any_version(self):
+        for pre, want in [("/home/u/.cache/uv/archive-v0/abc", "uvx switchboard-agent@latest"),
+                          ("/home/u/.cache/uv/archive-v1/abc", "uvx switchboard-agent@latest"),
+                          ("C:\\Users\\u\\AppData\\Local\\uv\\cache\\archive-v12\\x", "uvx switchboard-agent@latest"),
+                          ("/usr/local", "switchboard-agent"),
+                          ("/home/u/archive-vx/env", "switchboard-agent")]:
+            with mock.patch.object(sys, "prefix", pre):
+                self.assertEqual(client.cmd_prefix(), want, pre)
+
+
 if __name__ == "__main__":
     unittest.main()

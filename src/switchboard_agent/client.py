@@ -222,8 +222,10 @@ def peer_line(agent, p):
 
 def cmd_prefix():
     """How this package was started: uvx or an installed command."""
+    import re
     import sys
-    return "uvx switchboard-agent@latest" if "archive-v0" in sys.prefix.replace("\\", "/") else "switchboard-agent"
+    # uv runs uvx tools from its cache's archive-v<N> folder; match any N so a uv cache bump keeps the uvx hint
+    return "uvx switchboard-agent@latest" if re.search(r"/archive-v\d+/", sys.prefix.replace("\\", "/") + "/") else "switchboard-agent"
 
 
 def ping_line(r):
