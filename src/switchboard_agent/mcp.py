@@ -205,6 +205,9 @@ def app_next(r, already=False):
                 % (owner, name),
                 "(To move this app to a different Switchboard, the user asks you to leave first, then pastes the new link.)"]
         say = "I'm already connected to your Switchboard as %s." % name
+        if not r.get("approved", True):
+            head.append("Still waiting for the owner to approve this agent on their dashboard.")
+            say = "Almost connected: approve %s on your Switchboard dashboard." % name
     else:
         head = ['Connected to %s\'s Switchboard as "%s". This app stays connected in every new chat: the keys are '
                 "saved on this computer and the Switchboard tools are always here." % (owner, name)]
@@ -237,6 +240,8 @@ class Server:
         except SwitchboardError as e:
             if e.code in ("removed_by_owner", "invalid_token"):
                 return None
+            if e.code == "pending_approval":  # joined, owner hasn't approved yet: still this app's one identity
+                return {"name": p["name"], "slug": p["slug"], "owner": p.get("owner"), "approved": False}
             raise
 
     def agent(self):

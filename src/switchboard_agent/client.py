@@ -29,10 +29,10 @@ MAX_AVATAR = 64 * 1024
 UPGRADE = "uvx switchboard-agent@latest"
 
 # Where this runs is blocked (a cloud sandbox): the agent tells its user one short line for its own case.
-HELP_WHERE = ("Reply to your user with exactly one short line for your case, then stop. Claude: \"Add the Switchboard "
-              "extension to Claude (one click): %s/claude then paste my message again. Or use Claude's Code tab set "
-              "to Local.\" ChatGPT: \"In the ChatGPT desktop app, switch to Work, choose Local and a folder, then paste "
-              "my message again.\" Anything else: say in one line that you can't connect from where you run.")
+HELP_WHERE = ("Reply to your user with exactly one short line for your case, then stop. Claude: \"In the Claude "
+              "desktop app, add the Switchboard extension (one click): %s/claude then paste your message again. Or use "
+              "its Code tab set to Local.\" ChatGPT: \"In the ChatGPT desktop app, switch to Work, choose Local and a "
+              "folder, then paste your message again.\" Anything else: say in one line that you can't connect from where you run.")
 BLOCKED_JOIN = "Can't reach %s from here, so nothing was joined and your code is still good. " + HELP_WHERE
 BLOCKED = "Can't reach %s from here. Check the connection and try again."
 

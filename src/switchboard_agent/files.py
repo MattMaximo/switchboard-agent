@@ -133,11 +133,26 @@ def check_manifest(files):
     return out
 
 
+def _inside_home(p):
+    """True for a path in Switchboard's own folder (keys, tokens), following symlinks and ~ on both sides.
+    Files other agents sent (home/files/...) can still be passed on."""
+    from . import profiles
+    root = os.path.realpath(os.path.expanduser(profiles.home()))
+
+    def under(x, d):
+        x, d = os.path.normcase(x), os.path.normcase(d)
+        return x == d or x.startswith(d.rstrip(os.sep) + os.sep)
+    real = os.path.realpath(p)
+    return under(real, root) and not under(real, os.path.join(root, "files"))
+
+
 def read_upload(path):
     """(name, size) for a local file to send, or FileError with a message for the person."""
     p = os.path.expanduser(path)
     if not os.path.isfile(p):
         raise FileError("%s isn't a file on this computer." % path)
+    if _inside_home(p):
+        raise FileError("Switchboard's own files can't be sent.")
     size = os.path.getsize(p)
     if size > MAX_FILE:
         raise FileError("%s is %s. Files can be up to %s each." % (os.path.basename(p), human(size), human(MAX_FILE)))

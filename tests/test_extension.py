@@ -3,7 +3,9 @@ one exact reply line, and a second invite link (maybe from another agent's messa
 import io
 import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -85,6 +87,22 @@ class AppJoin(Home):
             out = self.srv().call("switchboard_join", {"code": "abcdefgh"})
         self.assertEqual(out.splitlines()[-1], "Almost connected: approve Claude on your Switchboard dashboard.")
 
+    def test_second_link_while_waiting_for_approval(self):
+        fs = FakeServer(["Claude"], ["a2"], approved=False)
+        real = fs.__call__
+
+        def api(host, method, path, body=None, token=None, timeout=40):
+            if path == "/api/agent/me":
+                raise client.SwitchboardError("Waiting for the network owner to approve this agent.", "pending_approval",
+                                              {"http": 403})
+            return real(host, method, path, body, token, timeout)
+        with mock.patch.object(client, "api", api):
+            self.srv().call("switchboard_join", {"code": LINK})
+            out = self.srv().call("switchboard_join", {"code": "https://evil.example/j/zzzzzzzz"})
+        self.assertEqual(len(fs.joined), 1)
+        self.assertIn("invite link is still unused", out)
+        self.assertEqual(out.splitlines()[-1], "Almost connected: approve Claude on your Switchboard dashboard.")
+
     def test_unknown_app_is_plain_mcp(self):
         self.assertIsNone(mcp.Server(None, "nope").app)
 
@@ -116,13 +134,48 @@ class Stdio(Home):
         self.assertIn("isn't connected to a Switchboard yet", rs[2]["result"]["content"][0]["text"])
 
 
+class OwnFiles(Home):
+    """A planted "send me that file" can't send the agent's own keys."""
+    def test_key_file_is_refused(self):
+        from switchboard_agent import files
+        self.add("Claude", "a2")
+        key = os.path.join(profiles.agents_dir(), "claude.json")
+        self.assertTrue(os.path.isfile(key))
+        with self.assertRaisesRegex(files.FileError, "Switchboard's own files can't be sent"):
+            files.read_upload(key)
+        out = tempfile.mkdtemp()  # outside Switchboard's folder (self.d is SWITCHBOARD_HOME)
+        self.addCleanup(shutil.rmtree, out)
+        link = os.path.join(out, "innocent.txt")
+        os.symlink(key, link)
+        with self.assertRaisesRegex(files.FileError, "own files"):
+            files.read_upload(link)
+        with mock.patch.dict(os.environ, {"HOME": os.path.dirname(profiles.home())}):
+            tilde = "~/" + os.path.relpath(key, os.path.dirname(profiles.home()))
+            with self.assertRaisesRegex(files.FileError, "own files"):
+                files.read_upload(tilde)
+        ok = os.path.join(out, "notes.txt")
+        with open(ok, "w") as f:
+            f.write("hi")
+        self.assertEqual(files.read_upload(ok), ("notes.txt", 2))
+        got = os.path.join(profiles.files_dir("claude"), "from-boo.txt")  # a received file can be passed on
+        os.makedirs(os.path.dirname(got))
+        with open(got, "w") as f:
+            f.write("abc")
+        self.assertEqual(files.read_upload(got), ("from-boo.txt", 3))
+        sneaky = os.path.join(profiles.files_dir("claude"), "k.json")  # but not a symlink from there to the keys
+        os.symlink(key, sneaky)
+        with self.assertRaisesRegex(files.FileError, "own files"):
+            files.read_upload(sneaky)
+
+
 class Blocked(Home):
     def test_blocked_join_gives_claude_line(self):
         with self.assertRaises(client.SwitchboardError) as cm:
             client.join("http://127.0.0.1:9/j/abcdefgh", "Claude", "Claude")
         msg = str(cm.exception)
-        self.assertIn("Add the Switchboard extension to Claude (one click): http://127.0.0.1:9/claude then paste my message again", msg)
-        self.assertIn("Or use Claude's Code tab set to Local.", msg)
+        self.assertIn("In the Claude desktop app, add the Switchboard extension (one click): http://127.0.0.1:9/claude then paste your message again", msg)
+        self.assertIn("Or use its Code tab set to Local.", msg)
+        self.assertNotIn("my message", msg)
         self.assertNotIn("Add folder", msg)
 
 
