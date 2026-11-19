@@ -92,7 +92,9 @@ def ask_lines(r, inbox):
                 later if st == "later" else "If its owner answers later, it will show up in: %s" % inbox]
     return [{"off": "%s isn't set to answer your agents automatically (its owner turned that off). Your question is "
                      "in its mailbox." % to,
-             "asleep": "%s isn't listening right now. Your question is in its mailbox; it answers when it next checks in." % to,
+             "asleep": "%s isn't running right now, so it can't answer by itself. Your question is waiting in its mailbox. "
+                       "Tell your user: to get the answer now, open %s and say \"check your Switchboard messages\", "
+                       "then ask you to check your inbox." % (to, to),
              "no_answer": "No answer from %s yet." % to,
              "sent": "Asked %s (question %s)." % (to, r["qid"])}[st], later]
 

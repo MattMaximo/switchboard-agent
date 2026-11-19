@@ -254,6 +254,7 @@ class AskAnswer(Base):
         self.assertLess(time.time() - t0, 3)
         self.assertEqual(r["status"], "asleep")
         self.assertEqual(len(self.relay.box["ab"]), 1)  # still delivered to its mailbox
+        self.assertIn('open B and say "check your Switchboard messages"', " ".join(client.ask_lines(r, "inbox")))
 
     def test_no_answer_within_wait(self):
         r = client.Agent("A").ask("B", "q", wait=1, poll=1)
