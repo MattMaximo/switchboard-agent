@@ -31,7 +31,7 @@ class Home(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, {"SWITCHBOARD_HOME": self.d, "CLAUDE_CONFIG_DIR": os.path.join(self.d, "claude")},
                                    clear=False)
         self.env.start()
-        for k in ("SWITCHBOARD_AS", "SWITCHBOARD_CLAUDE_SKILLS", "SWITCHBOARD_SERVICE"):
+        for k in ("SWITCHBOARD_AS", "SWITCHBOARD_CLAUDE_SKILLS", "SWITCHBOARD_SERVICE", "CLAUDECODE"):
             os.environ.pop(k, None)
         self.svc = no_services()
         self.svc.start()

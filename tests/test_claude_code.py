@@ -20,8 +20,18 @@ class Kind(unittest.TestCase):
                           ("Claude app", "Claude"), ("Grok 4 bot", "Grok"), ("xAI Grok", "Grok"),
                           ("OpenAI Codex CLI", "Codex"), ("Hermes Agent", "Hermes"), ("opencode", "OpenCode"),
                           ("ChatGPT desktop", "ChatGPT"), ("Agent", "Agent"), ("", "Agent"), (None, "Agent"),
+                          ("Claude Haiku 5.5 coding agent", "Claude Code"),
                           ("Some Custom Thing", "Some Custom Thing")]:
             self.assertEqual(client.tidy_kind(raw), want, raw)
+
+    def test_inside_claude_code(self):
+        with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):
+            self.assertEqual(client.join_kind("Claude"), "Claude Code")
+            self.assertEqual(client.join_kind("WHAT YOU ARE".lower()), "what you are")  # the server refuses placeholders
+            self.assertEqual(client.join_kind(None), "Claude Code")
+            self.assertEqual(client.join_kind("Grok"), "Grok")  # an explicit other kind wins
+        with mock.patch.dict(os.environ, {"CLAUDECODE": ""}):
+            self.assertEqual(client.join_kind("Claude"), "Claude")
 
 
 class CCJoin(Home):

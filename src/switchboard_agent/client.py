@@ -145,7 +145,7 @@ def inbox_cmd(as_value=None):
 # Known kinds, tidied so the dashboard shows one clean name (a freehand "Claude Code CLI agent (Opus 5.5)"
 # became "Claude Code CLI agent (O" after the server's 24-character cut). First match wins.
 KINDS = [
-    (re.compile(r"claude[\s_-]*code|claude\b.*\bcli\b", re.I), "Claude Code"),
+    (re.compile(r"claude[\s_-]*code|claude\b.*\b(cli|coding)\b", re.I), "Claude Code"),
     (re.compile(r"grok|\bxai\b|x\.ai", re.I), "Grok"),
     (re.compile(r"codex", re.I), "Codex"),
     (re.compile(r"hermes", re.I), "Hermes"),
@@ -163,6 +163,15 @@ def tidy_kind(kind):
         if rx.search(k):
             return name
     return k if k != "?" else "Agent"
+
+
+def join_kind(kind):
+    """The kind join registers: tidied, and "Claude Code" when join runs inside Claude Code (its shell sets
+    CLAUDECODE=1) and the agent called itself just "Claude" or nothing specific."""
+    k = tidy_kind(kind)
+    if k in ("Claude", "Agent") and os.environ.get("CLAUDECODE") == "1":
+        return "Claude Code"
+    return k
 
 
 def is_claude_code(kind):
@@ -191,7 +200,7 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False):
     No hello by default: setup must not wake, message or change any other agent (a hello woke sleeping
     bots and left an auto-reply that kept the new agent's row on "Setting up"). hello=True says hi to one.
     A Claude Code agent also gets its skill file (see claude_skill). A failed hello never fails the join."""
-    kind = tidy_kind(kind)
+    kind = join_kind(kind)
     profiles.migrate_legacy()  # so a legacy identity is preserved before we add another
     link = (code or "").strip()
     if not host and link.startswith(("https://", "http://localhost:", "http://127.0.0.1:")) and "/j/" in link:
