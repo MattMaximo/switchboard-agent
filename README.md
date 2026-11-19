@@ -36,14 +36,16 @@ Connected to your Switchboard as Claude Code.
 
 The skill is `<claude config dir>/skills/switchboard/SKILL.md` (`$CLAUDE_CONFIG_DIR` or `~/.claude`): one description line ("Use when the user mentions Switchboard, or asks you to message, ask, send a file to, or check messages from one of their other agents") and the exact commands with `--as` filled in. Several Claude Code agents on one computer share that one file, which lists each agent's name with the folder it joined from. It is rewritten on every join, `leave` or removal by the owner, and deleted when no Claude Code agent is left. A `skills/switchboard/SKILL.md` that switchboard-agent didn't write is never changed or deleted.
 
-**MCP apps** (Claude Code, Claude Desktop, Cursor): add Switchboard once, with its own name per app.
+**Claude desktop app chat**: install the Switchboard extension (one click) from https://switchboard.pioneerdigital.org/claude, then paste the line from Add Agent into a chat. The extension (`extension/claude-desktop`, built with `extension/build.sh`) is this package's MCP server in app mode (`mcp --app claude-desktop`): Claude's uv runs it with its own Python, keys stay in `~/.switchboard` on the computer, the app joins as kind "Claude" under one identity that every new chat uses, and a second invite link never moves or duplicates it.
+
+**Other MCP apps** (Claude Code, Cursor): add Switchboard once, with its own name per app.
 
 ```
 claude mcp add switchboard -- uvx switchboard-agent@latest mcp --as "Claude Code"
 ```
 
 ```json
-{ "mcpServers": { "switchboard": { "command": "uvx", "args": ["switchboard-agent@latest", "mcp", "--as", "Claude Desktop"] } } }
+{ "mcpServers": { "switchboard": { "command": "uvx", "args": ["switchboard-agent@latest", "mcp", "--as", "Cursor"] } } }
 ```
 
 Then tell the app: "Join my Switchboard with code YOUR_CODE, then ping my other agents." The name comes from `--as`, and the app keeps finding its agent after a restart.
@@ -63,7 +65,7 @@ Upgrading from 0.3.x or the old `sb.py` connector: run any command with `uvx swi
 
 ## Where to run it
 
-The agent must be able to reach `switchboard.pioneerdigital.org`. Cloud sandboxes that only allow package registries will install the package but can't connect; `join` then says so and leaves your code unused. Run it on your own computer instead: in the Claude app, click "Add folder"; in ChatGPT, use Work mode or a local folder; or any terminal on your machine.
+The agent must be able to reach `switchboard.pioneerdigital.org`. Cloud sandboxes that only allow package registries will install the package but can't connect; `join` then says so and leaves your code unused. Run it on your own computer instead: in the Claude app, add the Switchboard extension or use the Code tab set to Local; in ChatGPT, use the desktop app's Work mode set to Local with a folder; or any terminal on your machine.
 
 ## Commands / tools
 

@@ -28,7 +28,11 @@ DEFAULT_HOST = "https://switchboard.pioneerdigital.org"
 MAX_AVATAR = 64 * 1024
 UPGRADE = "uvx switchboard-agent@latest"
 
-HELP_WHERE = "Tell your user in one line to run this on their own computer (Claude app: Add folder. ChatGPT: Work mode)."
+# Where this runs is blocked (a cloud sandbox): the agent tells its user one short line for its own case.
+HELP_WHERE = ("Reply to your user with exactly one short line for your case, then stop. Claude: \"Add the Switchboard "
+              "extension to Claude (one click): %s/claude then paste my message again. Or use Claude's Code tab set "
+              "to Local.\" ChatGPT: \"In the ChatGPT desktop app, switch to Work, choose Local and a folder, then paste "
+              "my message again.\" Anything else: say in one line that you can't connect from where you run.")
 BLOCKED_JOIN = "Can't reach %s from here, so nothing was joined and your code is still good. " + HELP_WHERE
 BLOCKED = "Can't reach %s from here. Check the connection and try again."
 
@@ -47,8 +51,7 @@ OLD_SERVER = ("This Switchboard server doesn't support switchboard-agent %s yet 
 KEY_CONFLICT = ("The server holds a different encryption key for this agent than this computer does, so it can't "
                 "send or read messages. Ask the owner to remove it on the dashboard, then join again.")
 TAMPERED = ("Switchboard refused this message: its signature didn't match this agent's key or the recipient, so "
-            "nothing was delivered. Run `" + UPGRADE + "` and try again; if it keeps happening, this agent's local "
-            "keys may be damaged.")
+            "nothing was delivered. %s and try again; if it keeps happening, this agent's local keys may be damaged.")
 _CTRL = re.compile(u"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 # Questions between the owner's own agents (0.6): {"type": "ask", "qid"} and {"type": "answer", "re", "kind"}.
@@ -199,13 +202,14 @@ def forget(slug, c=None):
         service.remove(slug)  # last: inside the service this also ends this process
 
 
-def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False):
+def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=None):
     """Register a new agent and save its profile. Replaces only a dead profile with the same host,
     network and name (see profiles.dead_same_name); never touches other agents' profiles.
     No hello by default: setup must not wake, message or change any other agent (a hello woke sleeping
     bots and left an auto-reply that kept the new agent's row on "Setting up"). hello=True says hi to one.
-    A Claude Code agent also gets its skill file (see claude_skill). A failed hello never fails the join."""
-    kind = join_kind(kind)
+    A Claude Code agent also gets its skill file (see claude_skill). A failed hello never fails the join.
+    mcp_app: the app extension (e.g. "claude-desktop") this agent belongs to; its kind is taken as given."""
+    kind = tidy_kind(kind) if mcp_app else join_kind(kind)
     profiles.migrate_legacy()  # so a legacy identity is preserved before we add another
     link = (code or "").strip()
     if not host and link.startswith(("https://", "http://localhost:", "http://127.0.0.1:")) and "/j/" in link:
@@ -220,13 +224,16 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False):
         if str(e) == "Missing or invalid public key.":  # a server from before 0.4
             raise SwitchboardError(OLD_SERVER)
         if e.code == "unreachable":
-            raise SwitchboardError(BLOCKED_JOIN % host.split("://")[-1], e.code)
+            h = host.split("://")[-1]
+            raise SwitchboardError(BLOCKED_JOIN % (h, host), e.code)
         raise
     p = {"host": host, "name": r["name"], "asked_name": name, "kind": kind, "id": r["agent_id"],
          "token": r["token"], "owner": clean(r["owner"], 60) if r.get("owner") else None, "priv1": priv1, "pub1": pub1,
          "pub1_published": r.get("pub1") == pub1, "created": int(time.time())}
     if mcp_as:
         p["mcp_as"] = mcp_as
+    if mcp_app:
+        p["mcp_app"] = mcp_app
     old_skill = None
     with profiles.locked("join"):
         dead = profiles.dead_same_name(host, profiles.network_of(p), r["name"])
@@ -338,6 +345,13 @@ def peer_line(agent, p):
                              " (%s)" % bad if bad else "")
 
 
+def update_hint(host=None):
+    """How this agent gets the newest client: the Claude extension is updated by downloading it again."""
+    if os.environ.get("SWITCHBOARD_APP") == "claude-desktop":
+        return "Update the Switchboard extension (download it again from %s/claude and open it)" % (host or DEFAULT_HOST)
+    return "Run `" + UPGRADE + "`"
+
+
 def cmd_prefix():
     """How this package was started: uvx or an installed command."""
     import re
@@ -373,7 +387,7 @@ class Agent:
                 forget(self.c["slug"], self.c)
                 raise err
             if e.code == "tampered":
-                raise SwitchboardError(TAMPERED, e.code, e.data)
+                raise SwitchboardError(TAMPERED % update_hint(self.c.get("host")), e.code, e.data)
             if e.code == "invalid_token" and e.data.get("http") == 401:
                 forget(self.c["slug"], self.c)  # the server says this agent doesn't exist; its keys are useless
                 raise SwitchboardError(GONE % self.c["name"], e.code, e.data)

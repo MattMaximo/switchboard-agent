@@ -1,0 +1,17 @@
+# The Claude Desktop extension: Claude runs `uv run src/server.py` here (manifest server.type "uv"), so uv brings
+# its own Python and installs only `cryptography`. The switchboard_agent package itself is copied into src/ by
+# ../build.sh, so this bundle is exactly the version it says (no PyPI download of our code at run time).
+[project]
+name = "switchboard-claude-extension"
+version = "0.9.0"
+requires-python = ">=3.10"
+dependencies = [
+  "cryptography>=47; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+  "cryptography>=47,<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
+
+[tool.uv]
+# A uv-managed Python only: never probe the system python3, which on a Mac without developer tools pops an
+# "install command line tools" dialog instead of running.
+python-preference = "only-managed"
+python-downloads = "automatic"

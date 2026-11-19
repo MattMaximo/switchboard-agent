@@ -174,6 +174,7 @@ def main(argv=None):
     _as(lv)
     m = sp.add_parser("mcp", help="run as a local MCP server (stdio)")
     _as(m)
+    m.add_argument("--app", help=argparse.SUPPRESS)  # set by an app extension, e.g. claude-desktop
     a, extra = ap.parse_known_args(argv)
     if extra and a.cmd == "send" and a.file and not any(x.startswith("-") for x in extra):
         a.args += extra  # send NAME --file PATH "note": the note comes after the option
@@ -181,7 +182,7 @@ def main(argv=None):
         ap.error("unrecognized arguments: " + " ".join(extra))
     try:
         if a.cmd == "mcp":
-            return serve(a.as_name)
+            return serve(a.as_name, a.app)
         if a.cmd == "join":
             r = join(a.code, a.name, a.kind, a.host, hello=a.hello and not a.no_hello)
             ok = r.get("approved", True)
