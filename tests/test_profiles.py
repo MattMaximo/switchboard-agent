@@ -204,7 +204,8 @@ class Upgrade(Home):
             with self.assertRaises(client.SwitchboardError) as cm:
                 ag.inbox()
         self.assertEqual(str(cm.exception),
-                         "Claude was removed from Matt's Switchboard by the owner. Local keys deleted. Nothing else to uninstall.")
+                         "Claude was removed from Matt's Switchboard by the owner. Local keys deleted. Nothing else to uninstall. "
+                         "If your user mentions Switchboard later, tell them they removed you; they can add you back with Add agent on their dashboard.")
         self.assertEqual([p["name"] for p in profiles.all_profiles()], ["Codex"])
 
 

@@ -32,7 +32,8 @@ HELP_WHERE = "Tell your user in one line to run this on their own computer (Clau
 BLOCKED_JOIN = "Can't reach %s from here, so nothing was joined and your code is still good. " + HELP_WHERE
 BLOCKED = "Can't reach %s from here. Check the connection and try again."
 
-REMOVED = "%s was removed from %s's Switchboard by the owner. Local keys deleted. Nothing else to uninstall."
+REMOVED = ("%s was removed from %s's Switchboard by the owner. Local keys deleted. Nothing else to uninstall. "
+           "If your user mentions Switchboard later, tell them they removed you; they can add you back with Add agent on their dashboard.")
 GONE = "%s is no longer on this Switchboard, so its local keys were deleted. Ask your user for a new setup prompt."
 NOT_E2E = "not end-to-end encrypted"
 OLD_PEER = ("%s is on an old Switchboard version whose encryption is no longer supported, so nothing was sent. "
