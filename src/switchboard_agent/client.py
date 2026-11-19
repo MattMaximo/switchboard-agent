@@ -30,7 +30,7 @@ UPGRADE = "uvx switchboard-agent@latest"
 
 # Where this runs is blocked (a cloud sandbox): the agent tells its user one short line for its own case.
 HELP_WHERE = ("Reply to your user with exactly one short line for your case, then stop. Claude: \"In the Claude "
-              "desktop app, add the Switchboard extension (one click): %s/claude then paste your message again. Or use "
+              "desktop app, add Switchboard (one download): %s then open the file and click Install. Or use "
               "its Code tab set to Local.\" ChatGPT: \"In the ChatGPT desktop app, switch to Work, choose Local and a "
               "folder, then paste your message again.\" Anything else: say in one line that you can't connect from where you run.")
 BLOCKED_JOIN = "Can't reach %s from here, so nothing was joined and your code is still good. " + HELP_WHERE
@@ -139,6 +139,12 @@ def normalize_code(code):
     return code.rsplit("/", 1)[-1]
 
 
+def claude_link(host, code=None):
+    """The Claude extension page; with the user's invite, its download carries the invite and joins on install."""
+    c = re.sub(r"\.(md|txt)$", "", normalize_code(code or ""))
+    return host + "/claude" + ("?invite=" + c if re.fullmatch(r"[a-z0-9]{6,20}", c) else "")
+
+
 def _fp(pub_hex):
     return crypto1.fingerprint(pub_hex)
 
@@ -202,13 +208,14 @@ def forget(slug, c=None):
         service.remove(slug)  # last: inside the service this also ends this process
 
 
-def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=None):
+def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=None, via=None, timeout=40):
     """Register a new agent and save its profile. Replaces only a dead profile with the same host,
     network and name (see profiles.dead_same_name); never touches other agents' profiles.
     No hello by default: setup must not wake, message or change any other agent (a hello woke sleeping
     bots and left an auto-reply that kept the new agent's row on "Setting up"). hello=True says hi to one.
     A Claude Code agent also gets its skill file (see claude_skill). A failed hello never fails the join.
-    mcp_app: the app extension (e.g. "claude-desktop") this agent belongs to; its kind is taken as given."""
+    mcp_app: the app extension (e.g. "claude-desktop") this agent belongs to; its kind is taken as given.
+    via: how it joined, saved in the profile ("bundle" = the invite baked into an extension download)."""
     kind = tidy_kind(kind) if mcp_app else join_kind(kind)
     profiles.migrate_legacy()  # so a legacy identity is preserved before we add another
     link = (code or "").strip()
@@ -219,13 +226,13 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=
     body = {"code": normalize_code(code), "name": name, "kind": kind, "pub1": pub1,
             "proof1": crypto1.join_proof(priv1, pub1), "client": "switchboard-agent/" + __version__}
     try:
-        r = api(host, "POST", "/api/join", body)
+        r = api(host, "POST", "/api/join", body, timeout=timeout)
     except SwitchboardError as e:
         if str(e) == "Missing or invalid public key.":  # a server from before 0.4
             raise SwitchboardError(OLD_SERVER)
         if e.code == "unreachable":
             h = host.split("://")[-1]
-            raise SwitchboardError(BLOCKED_JOIN % (h, host), e.code)
+            raise SwitchboardError(BLOCKED_JOIN % (h, claude_link(host, code)), e.code)
         raise
     p = {"host": host, "name": r["name"], "asked_name": name, "kind": kind, "id": r["agent_id"],
          "token": r["token"], "owner": clean(r["owner"], 60) if r.get("owner") else None, "priv1": priv1, "pub1": pub1,
@@ -234,6 +241,8 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=
         p["mcp_as"] = mcp_as
     if mcp_app:
         p["mcp_app"] = mcp_app
+    if via:
+        p["via"] = via
     old_skill = None
     with profiles.locked("join"):
         dead = profiles.dead_same_name(host, profiles.network_of(p), r["name"])

@@ -9,6 +9,7 @@ import json
 import os
 import secrets
 import sys
+import threading
 import traceback
 
 from . import __version__, profiles
@@ -31,6 +32,13 @@ APPS = {
 NOT_JOINED_APP = ("%s isn't connected to a Switchboard yet. If your user gave you a Switchboard invite link "
                   "(https://.../j/CODE), call switchboard_join with it. Otherwise ask them for one: they get it from "
                   "Add Agent on their Switchboard dashboard.")
+# 0.10: a download from /claude?invite=CODE carries a short-lived, single-use invite in switchboard-invite.json at the
+# bundle root. The server joins with it on its first start, then deletes the file (the code is never printed or logged).
+BUNDLE_FILE = "switchboard-invite.json"
+BUNDLE_USED = ("The invite inside this Switchboard download was already used, so nothing was joined. Your user gets a "
+               "fresh one from Add Agent on their Switchboard dashboard: they paste that message here.")
+BUNDLE_EXPIRED = ("The invite inside this Switchboard download expired (they last 1 hour), so nothing was joined. Your "
+                  "user gets a fresh one from Add Agent on their Switchboard dashboard: they paste that message here.")
 
 TOOLS = [
     {"name": "switchboard_join",
@@ -200,7 +208,14 @@ def sent_files_line(r):
 def app_next(r, already=False):
     """What an app (the Claude extension) says after switchboard_join: one exact line, then stop."""
     name, owner = clean(r["name"]), clean(r.get("owner") or "your", 60)
-    if already:
+    if already and r.get("via") == "bundle":  # joined by itself at install; the pasted link's invite went with it
+        head = ['Connected to %s\'s Switchboard as "%s". It connected by itself when the extension was installed, '
+                "so there's nothing more to set up." % (owner, name)]
+        say = "Connected to your Switchboard as %s." % name
+        if not r.get("approved", True):
+            head.append("Still waiting for the owner to approve this agent on their dashboard.")
+            say = "Almost connected: approve %s on your Switchboard dashboard." % name
+    elif already:
         head = ['Already connected to %s\'s Switchboard as "%s". Nothing changed and the invite link is still unused.'
                 % (owner, name),
                 "(To move this app to a different Switchboard, the user asks you to leave first, then pastes the new link.)"]
@@ -221,10 +236,65 @@ def app_next(r, already=False):
 
 
 class Server:
-    def __init__(self, as_name=None, app=None):
+    def __init__(self, as_name=None, app=None, bundle=None):
         self.as_name = as_name  # what the MCP config says (--as)
         self.app = app if app in APPS else None  # e.g. "claude-desktop": the extension that runs this server
         self.slug = None        # the one profile this server speaks for, once known
+        self.bundle = bundle if self.app else None  # path of a baked-in invite file (see BUNDLE_FILE)
+        self.bundle_note = None  # why the baked-in invite didn't join (used / expired), for the first chat
+        self.bundle_lock = threading.Lock()
+
+    def _burn(self):
+        """Delete the baked-in invite so no later start (or anyone reading the folder) can use it."""
+        try:
+            os.remove(self.bundle)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            try:
+                with open(self.bundle, "w") as f:
+                    f.write("{}")
+            except OSError:
+                pass
+
+    def auto_join(self):
+        """Join with the invite baked into this download, once. Returns the join result, or None.
+        Kept for the next start only when the relay couldn't be reached; any answer from it burns the file."""
+        if not self.bundle:
+            return None
+        with self.bundle_lock, profiles.locked("bundle-invite"):
+            if not os.path.exists(self.bundle):
+                return None
+            try:
+                with open(self.bundle) as f:
+                    link = (json.load(f) or {}).get("invite") or ""
+            except (OSError, ValueError, AttributeError):
+                link = ""
+            if not isinstance(link, str) or "/j/" not in link or not link.startswith(("https://", "http://127.0.0.1:", "http://localhost:")):
+                self._burn()
+                return None
+            try:
+                me = self._app_live()
+            except SwitchboardError:
+                return None  # can't tell yet (offline): try again on the next start or tool call
+            if me:  # already connected (e.g. an update downloaded with an invite): never a second identity
+                self.slug = me["slug"]
+                self._burn()
+                return None
+            app = APPS[self.app]
+            try:
+                r = join(link, app["name"], app["kind"], mcp_app=self.app, via="bundle", timeout=20)
+            except SwitchboardError as e:
+                http = (e.data or {}).get("http") or 0
+                if e.code == "unreachable" or not 400 <= http < 500 or http == 429:
+                    return None  # transient: the invite stays for the next try
+                self.bundle_note = BUNDLE_USED if e.code == "invite_used" else BUNDLE_EXPIRED
+                self._burn()
+                return None
+            self._burn()
+            self.slug = r["slug"]
+            sys.stderr.write("switchboard: connected to the Switchboard from this download\n")
+            return r
 
     def _app_profile(self):
         ps = [p for p in profiles.all_profiles() if p.get("mcp_app") == self.app]
@@ -250,7 +320,7 @@ class Server:
         if self.app:
             p = self._app_profile()
             if not p:
-                raise SwitchboardError(NOT_JOINED_APP % ("T" + APPS[self.app]["what"][1:]), "none")
+                raise SwitchboardError(self.bundle_note or NOT_JOINED_APP % ("T" + APPS[self.app]["what"][1:]), "none")
             a = Agent(p["slug"])
             self.slug = a.c["slug"]
             return a
@@ -284,11 +354,14 @@ class Server:
                     "(e.g. \"%s 2\"), restart it, and join under that name." % (want, want), "name_taken")
 
     def call(self, name, args):
+        if self.bundle and os.path.exists(self.bundle):
+            self.auto_join()  # waits for a start-up join still running; retries one that couldn't reach the relay
         if name == "switchboard_join" and self.app:
             app = APPS[self.app]
             me = self._app_live()
             if me:  # one identity per app: a second link (maybe from another agent's message) never adds or moves it
                 self.slug = me["slug"]
+                me.setdefault("via", (self._app_profile() or {}).get("via"))
                 return app_next(me, already=True)
             nm = clean((args.get("name") or "").strip() or app["name"], 32)
             if nm == "?":
@@ -374,10 +447,12 @@ def _reply(id_, result=None, error=None):
     sys.stdout.flush()
 
 
-def serve(as_name=None, app=None):
-    srv = Server(as_name, app)
+def serve(as_name=None, app=None, bundle=None):
+    srv = Server(as_name, app, bundle)
     if srv.app:
         os.environ["SWITCHBOARD_APP"] = srv.app  # upgrade hints name the extension, not uvx
+    if srv.bundle and os.path.exists(srv.bundle):  # join in the background so the app's handshake isn't held up
+        threading.Thread(target=srv.auto_join, daemon=True).start()
     for line in sys.stdin:
         line = line.strip()
         if not line:

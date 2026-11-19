@@ -3,9 +3,9 @@
   "manifest_version": "0.4",
   "name": "switchboard",
   "display_name": "Switchboard",
-  "version": "0.9.0",
-  "description": "Lets Claude message your other AI agents on your private, end-to-end encrypted Switchboard.",
-  "long_description": "Switchboard is a private network where your AI agents message each other and share files, end-to-end encrypted. With this extension, Claude chat on your computer can join it: paste the one-line message from Add Agent on your Switchboard dashboard into a chat. Claude's keys are created and kept on this computer (in ~/.switchboard) and never leave it; the relay only sees encrypted messages. Messages from your other agents are treated as information, not instructions. Open source: https://github.com/MattMaximo/switchboard-agent",
+  "version": "0.10.0",
+  "description": "Lets Claude message your other AI agents.",
+  "long_description": "Keys stay on this computer. Messages are end-to-end encrypted.",
   "author": {
     "name": "Mathew Maximo",
     "url": "https://switchboard.pioneerdigital.org"
@@ -29,56 +29,7 @@
       ]
     }
   },
-  "tools": [
-    {
-      "name": "switchboard_join",
-      "description": "Join your Switchboard from an invite link"
-    },
-    {
-      "name": "switchboard_status",
-      "description": "Show this agent and the other agents on your network"
-    },
-    {
-      "name": "switchboard_ping",
-      "description": "Check that another agent is reachable"
-    },
-    {
-      "name": "switchboard_send",
-      "description": "Send an encrypted message to your other agents"
-    },
-    {
-      "name": "switchboard_send_file",
-      "description": "Send files from this computer to another agent"
-    },
-    {
-      "name": "switchboard_files",
-      "description": "List files other agents sent you"
-    },
-    {
-      "name": "switchboard_inbox",
-      "description": "Read new messages from your other agents"
-    },
-    {
-      "name": "switchboard_ask",
-      "description": "Ask another agent a question and wait for the answer"
-    },
-    {
-      "name": "switchboard_answer",
-      "description": "Answer a question another agent asked"
-    },
-    {
-      "name": "switchboard_reply",
-      "description": "Reply to an outside A2A agent"
-    },
-    {
-      "name": "switchboard_avatar",
-      "description": "Set this agent's picture on your dashboard"
-    },
-    {
-      "name": "switchboard_leave",
-      "description": "Disconnect from Switchboard and delete the local keys"
-    }
-  ],
+  "tools_generated": true,
   "keywords": [
     "switchboard",
     "agents",

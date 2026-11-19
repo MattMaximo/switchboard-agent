@@ -1,4 +1,4 @@
-"""0.9.0: the Claude Desktop extension runs `mcp --app claude-desktop`: one identity per app, kind Claude, no skill,
+"""0.9.0 (0.10.0: the invite baked into a download joins on first start, see Bundle): the Claude Desktop extension runs `mcp --app claude-desktop`: one identity per app, kind Claude, no skill,
 one exact reply line, and a second invite link (maybe from another agent's message) never adds or moves the agent."""
 import io
 import json
@@ -173,10 +173,127 @@ class Blocked(Home):
         with self.assertRaises(client.SwitchboardError) as cm:
             client.join("http://127.0.0.1:9/j/abcdefgh", "Claude", "Claude")
         msg = str(cm.exception)
-        self.assertIn("In the Claude desktop app, add the Switchboard extension (one click): http://127.0.0.1:9/claude then paste your message again", msg)
+        self.assertIn("In the Claude desktop app, add Switchboard (one download): http://127.0.0.1:9/claude?invite=abcdefgh "
+                      "then open the file and click Install.", msg)
         self.assertIn("Or use its Code tab set to Local.", msg)
         self.assertNotIn("my message", msg)
         self.assertNotIn("Add folder", msg)
+
+    def test_claude_link(self):
+        self.assertEqual(client.claude_link("https://h", "https://h/j/abcdefgh.md"), "https://h/claude?invite=abcdefgh")
+        self.assertEqual(client.claude_link("https://h", "x y<z"), "https://h/claude")
+        self.assertEqual(client.claude_link("https://h"), "https://h/claude")
+
+
+class Bundle(Home):
+    """0.10: a download from /claude?invite=CODE carries switchboard-invite.json; the first start joins with it once."""
+    CODE = "bndlcode77"
+
+    def setUp(self):
+        super().setUp()
+        self.ext = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.ext)
+        self.path = os.path.join(self.ext, mcp.BUNDLE_FILE)
+        with open(self.path, "w") as f:
+            json.dump({"invite": "https://x/j/" + self.CODE}, f)
+
+    def srv(self):
+        return mcp.Server(None, "claude-desktop", self.path)
+
+    def refusing(self, msg, code, http):
+        def api(*a, **k):
+            raise client.SwitchboardError(msg, code, {"http": http})
+        return api
+
+    def test_joins_once_and_deletes_the_invite(self):
+        fs = FakeServer(["Claude"], ["a2"])
+        err = io.StringIO()
+        with mock.patch.object(client, "api", fs), mock.patch("sys.stderr", err):
+            r = self.srv().auto_join()
+            self.assertIsNone(self.srv().auto_join())  # second start: nothing left to use
+            out = self.srv().call("switchboard_join", {"code": "https://x/j/othercode1"})  # user pastes anyway
+        self.assertEqual(r["name"], "Claude")
+        self.assertEqual(len(fs.joined), 1)
+        self.assertEqual((fs.joined[0]["code"], fs.joined[0]["name"], fs.joined[0]["kind"]), (self.CODE, "Claude", "Claude"))
+        self.assertFalse(os.path.exists(self.path))
+        p = profiles.all_profiles()[0]
+        self.assertEqual((p["mcp_app"], p["via"], p["host"]), ("claude-desktop", "bundle", "https://x"))
+        self.assertIn("connected by itself", out)
+        self.assertNotIn("still unused", out)
+        self.assertEqual(out.splitlines()[-1], "Connected to your Switchboard as Claude.")
+        self.assertNotIn(self.CODE, err.getvalue())
+
+    def test_tool_call_after_auto_join_just_works(self):
+        fs = FakeServer(["Claude"], ["a2"], peers=[peer("Boo", "b1")])
+        with mock.patch.object(client, "api", fs):
+            out = self.srv().call("switchboard_status", {})  # first chat: joins (if start-up didn't) and answers
+        self.assertIn('You are "Claude"', out)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_used_invite_is_refused_cleanly(self):
+        s = self.srv()
+        with mock.patch.object(client, "api", self.refusing("already used", "invite_used", 404)):
+            self.assertIsNone(s.auto_join())
+            with self.assertRaisesRegex(client.SwitchboardError, "already used"):
+                s.call("switchboard_status", {})
+        self.assertFalse(os.path.exists(self.path))
+        self.assertEqual(profiles.all_profiles(), [])
+
+    def test_expired_invite_is_refused_cleanly(self):
+        s = self.srv()
+        with mock.patch.object(client, "api", self.refusing("invalid, expired or was replaced", "invite_invalid", 404)):
+            s.auto_join()
+            with self.assertRaisesRegex(client.SwitchboardError, "expired \\(they last 1 hour\\)"):
+                s.call("switchboard_status", {})
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_offline_keeps_the_invite_for_the_next_try(self):
+        with mock.patch.object(client, "api", self.refusing("Can't reach x", "unreachable", 0)):
+            self.srv().auto_join()
+        self.assertTrue(os.path.exists(self.path))
+        with mock.patch.object(client, "api", self.refusing("Switchboard restarted", None, 503)):
+            self.srv().auto_join()
+        self.assertTrue(os.path.exists(self.path))
+        fs = FakeServer(["Claude"], ["a2"])
+        with mock.patch.object(client, "api", fs):
+            self.srv().auto_join()
+        self.assertEqual(len(fs.joined), 1)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_already_connected_app_never_joins_twice(self):
+        fs = FakeServer(["Claude", "Claude 2"], ["a2", "a3"])
+        with mock.patch.object(client, "api", fs):
+            mcp.Server(None, "claude-desktop").call("switchboard_join", {"code": LINK})
+            self.srv().auto_join()  # an update downloaded with a fresh invite
+        self.assertEqual(len(fs.joined), 1)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_bad_file_is_deleted(self):
+        for junk in ("not json", json.dumps({"invite": "javascript:alert(1)"}), json.dumps(["x"])):
+            with open(self.path, "w") as f:
+                f.write(junk)
+            fs = FakeServer(["Claude"], ["a2"])
+            with mock.patch.object(client, "api", fs):
+                self.srv().auto_join()
+            self.assertEqual(fs.joined, [])
+            self.assertFalse(os.path.exists(self.path))
+
+    def test_plain_server_ignores_bundle(self):
+        self.assertIsNone(mcp.Server("Claude Code", None, self.path).bundle)
+
+    def test_serve_joins_in_the_background(self):
+        fs = FakeServer(["Claude"], ["a2"])
+        reqs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "switchboard_status", "arguments": {}}}]
+        out = io.StringIO()
+        with mock.patch.object(client, "api", fs), \
+                mock.patch("sys.stdin", io.StringIO("\n".join(json.dumps(r) for r in reqs) + "\n")), \
+                mock.patch("sys.stdout", out), mock.patch.dict(os.environ, {"SWITCHBOARD_APP": ""}):
+            mcp.serve(None, "claude-desktop", self.path)
+        rs = [json.loads(x) for x in out.getvalue().splitlines()]
+        self.assertFalse(rs[1]["result"]["isError"], rs[1])
+        self.assertIn('You are "Claude"', rs[1]["result"]["content"][0]["text"])
+        self.assertEqual(len(fs.joined), 1)
 
 
 if __name__ == "__main__":
