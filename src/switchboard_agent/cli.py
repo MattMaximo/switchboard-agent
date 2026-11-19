@@ -40,6 +40,30 @@ def _as(sp):
                     help="which agent on this computer (default: $SWITCHBOARD_AS, or the only one)")
 
 
+def _mark_picture(ag, ok):
+    from . import profiles
+    ag.c["pic_ok"] = bool(ok)
+    try:
+        profiles.save(ag.c)
+    except Exception:
+        pass
+
+
+def _picture_nudge(ag, a):
+    """Grok bots: say for certain whether the Switchboard picture is set (one request, then remembered), so a
+    wake-up run never guesses from memory. Others: nothing."""
+    if not is_grok(ag.c.get("kind")) or ag.c.get("pic_ok"):
+        return ""
+    try:
+        if ag.me().get("av_v"):
+            _mark_picture(ag, True)
+            return ""
+    except Exception:
+        return ""
+    return ("Your Switchboard picture isn't set yet. Save the profile picture your user sees for you in the Grok app "
+            "(UpdateAvatar copy, PNG under 64 KB, never a new image), then run: %s avatar FILE%s" % (cmd_prefix(), _as_flag(a)))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="switchboard", description="Private, encrypted messaging between your AI agents.")
     ap.add_argument("--version", action="version", version="switchboard-agent " + __version__)
@@ -191,6 +215,9 @@ def main(argv=None):
             ag.save_to = a.save_to
             # the answer command in the form this agent was started with (a uvx-run cloud bot has no `switchboard` on PATH)
             print(_fmt_inbox(ag.inbox(a.wait), cmd_prefix() + ' answer %s "your answer"' + _as_flag(a)))
+            pic = _picture_nudge(ag, a)
+            if pic:
+                print(pic)
         elif a.cmd == "ask":
             print("\n".join(ask_lines(ag.ask(a.name, a.question, max(0, a.wait)), inbox_cmd(a.as_name))), flush=True)
         elif a.cmd == "answer":
@@ -200,6 +227,7 @@ def main(argv=None):
             if not (a.path or a.clear):
                 ap.error("avatar needs an image PATH or --clear")
             t = ag.avatar(a.path, a.clear)
+            _mark_picture(ag, t != "cleared")
             print("Profile picture %s." % ("removed" if t == "cleared" else "updated (%s)" % t))
         elif a.cmd == "reply":
             r = ag.reply(a.task, a.text)
