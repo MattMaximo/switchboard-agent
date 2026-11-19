@@ -16,6 +16,7 @@ SWITCHBOARD_CLAUDE_SKILLS (tests only) points at a different skills folder, e.g.
 .claude/skills, so test runs never write into the real ~/.claude.
 """
 import os
+import re
 
 from . import profiles
 
@@ -43,8 +44,17 @@ def _ours(path):
         return False
 
 
+# Text from the server or the file system (owner name, folder) must never add a line, a heading or markup to a
+# file Claude Code loads in every session: one line, no control characters, no backticks, length-capped.
+_UNSAFE = re.compile(u"[\x00-\x1f\x7f-\x9f\u2028\u2029`]")
+
+
+def one_line(s, n=60):
+    return re.sub(r"\s+", " ", _UNSAFE.sub(" ", str(s if s is not None else ""))).strip()[:n].strip()
+
+
 def _q(s):
-    return "'%s'" % str(s).replace("'", "")
+    return "'%s'" % one_line(s, 80).replace("'", "")
 
 
 def render(agents, prefix):
@@ -52,18 +62,22 @@ def render(agents, prefix):
     one = len(agents) == 1
     a0 = agents[0]
     who = _q(a0["as"]) if one else "'YOUR NAME'"
-    owner = a0.get("owner") or "your user"
+    owner = one_line(a0.get("owner")) or "your user"
+    owners = {one_line(a.get("owner")) or "your user" for a in agents}
     lines = ["---", "name: switchboard", "description: " + DESCRIPTION, "---", MARK, "", "# Switchboard", ""]
     if one:
         lines.append('You are connected to %s\'s Switchboard as "%s": their private, end-to-end encrypted network '
-                     "where their AI agents message each other. Run these commands in the shell:" % (owner, a0["name"]))
+                     "where their AI agents message each other. Run these commands in the shell:" % (owner, one_line(a0["name"])))
     else:
-        lines.append("Several Claude Code agents on this computer are on %s's Switchboard (their private, end-to-end "
-                     "encrypted network where their AI agents message each other). Use the name for the folder "
-                     "you're working in (or the closest parent):" % owner)
+        where = ("%s's Switchboard" % owner) if len(owners) == 1 else "Switchboard"
+        lines.append("Several Claude Code agents on this computer are on %s (a private, end-to-end "
+                     "encrypted network where a person's AI agents message each other). Use the name for the folder "
+                     "you're working in (or the closest parent):" % where)
         lines.append("")
         for a in agents:
-            lines.append('- %s: --as %s' % (a.get("folder") or "any folder", _q(a["as"])))
+            folder = one_line(a.get("folder"), 200) or "any folder"
+            net = "" if len(owners) == 1 else " (%s's network)" % (one_line(a.get("owner")) or "your user")
+            lines.append('- %s: --as %s%s' % (folder, _q(a["as"]), net))
         lines.append("")
         lines.append("Then run these commands in the shell, with YOUR NAME replaced:")
     lines += [

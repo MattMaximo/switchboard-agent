@@ -46,6 +46,9 @@ OLD_SERVER = ("This Switchboard server doesn't support switchboard-agent %s yet 
               "Try again later, or tell the network owner.") % __version__
 KEY_CONFLICT = ("The server holds a different encryption key for this agent than this computer does, so it can't "
                 "send or read messages. Ask the owner to remove it on the dashboard, then join again.")
+TAMPERED = ("Switchboard refused this message: its signature didn't match this agent's key or the recipient, so "
+            "nothing was delivered. Run `" + UPGRADE + "` and try again; if it keeps happening, this agent's local "
+            "keys may be damaged.")
 _CTRL = re.compile(u"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 # Questions between the owner's own agents (0.6): {"type": "ask", "qid"} and {"type": "answer", "re", "kind"}.
@@ -188,9 +191,11 @@ def forget(slug, c=None):
         sys.stderr.flush()
     try:
         profiles.delete(slug)
+        profiles.delete_locks(slug)
     finally:
         if c.get("claude_skill"):
             claude_skill.sync(c["claude_skill"], cmd_prefix())
+        service.forget_log(slug)
         service.remove(slug)  # last: inside the service this also ends this process
 
 
@@ -218,7 +223,7 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False):
             raise SwitchboardError(BLOCKED_JOIN % host.split("://")[-1], e.code)
         raise
     p = {"host": host, "name": r["name"], "asked_name": name, "kind": kind, "id": r["agent_id"],
-         "token": r["token"], "owner": r.get("owner"), "priv1": priv1, "pub1": pub1,
+         "token": r["token"], "owner": clean(r["owner"], 60) if r.get("owner") else None, "priv1": priv1, "pub1": pub1,
          "pub1_published": r.get("pub1") == pub1, "created": int(time.time())}
     if mcp_as:
         p["mcp_as"] = mcp_as
@@ -367,6 +372,8 @@ class Agent:
                 err = SwitchboardError(REMOVED % (self.c["name"], owner), e.code, e.data)
                 forget(self.c["slug"], self.c)
                 raise err
+            if e.code == "tampered":
+                raise SwitchboardError(TAMPERED, e.code, e.data)
             if e.code == "invalid_token" and e.data.get("http") == 401:
                 forget(self.c["slug"], self.c)  # the server says this agent doesn't exist; its keys are useless
                 raise SwitchboardError(GONE % self.c["name"], e.code, e.data)
@@ -477,8 +484,13 @@ class Agent:
         obj = dict(obj, mid=secrets.token_hex(12), ts=time.time(), **{"from": self.c["id"], "to": peer["id"]})
         return crypto1.seal(self.c["priv1"], self.c["pub1"], key, obj)
 
+    def _osig(self, to, blob, ctx=crypto1.CTX_AGENT):
+        """Outer signature the relay checks before it stores the blob or wakes anyone (see crypto1.outer_msg)."""
+        return crypto1.outer_sig(self.c["priv1"], ctx, to, blob)
+
     def _post(self, peer, blob):
-        return self._api("POST", "/api/agent/send", {"to": peer["id"], "blob": blob}).get("status", "sent")
+        return self._api("POST", "/api/agent/send", {"to": peer["id"], "blob": blob,
+                                                     "osig": self._osig(peer["id"], blob)}).get("status", "sent")
 
     def _send(self, peer, obj):
         return self._post(peer, self._seal(peer, obj))
@@ -501,7 +513,10 @@ class Agent:
         gid = "g" + secrets.token_hex(8)
         group = {"id": gid, "members": [{"id": self.c["id"], "name": self.c["name"]}] +
                  [{"id": m["id"], "name": m["name"]} for m in uniq]}
-        items = [{"to": m["id"], "blob": self._seal(m, {"type": "text", "text": text, "group": group})} for m in uniq]
+        items = []
+        for m in uniq:
+            blob = self._seal(m, {"type": "text", "text": text, "group": group})
+            items.append({"to": m["id"], "blob": blob, "osig": self._osig(m["id"], blob)})
         r = self._api("POST", "/api/agent/send_group", {"group": gid, "items": items})
         st = {x["to"]: x["status"] for x in r.get("results", [])}
         return {"group": gid, "results": [{"to": m["name"], "status": st.get(m["id"], "sent")} for m in uniq]}
@@ -540,7 +555,8 @@ class Agent:
             manifest.append({"id": fid, "name": fname, "size": size2, "n": n, "chunk": files_mod.CHUNK,
                              "sha256": sha, "key": base64.b64encode(key).decode()})
         blob = self._seal(p, {"type": "file", "text": str(note or ""), "files": manifest})
-        r = self._api("POST", "/api/agent/file/send", {"to": p["id"], "files": [f["id"] for f in manifest], "blob": blob})
+        r = self._api("POST", "/api/agent/file/send", {"to": p["id"], "files": [f["id"] for f in manifest], "blob": blob,
+                                                       "osig": self._osig(p["id"], blob)})
         return {"to": p["name"], "status": r.get("status", "sent"), "files": [{"name": f["name"], "size": f["size"]} for f in manifest]}
 
     def _receive_files(self, item, o, p):
@@ -894,6 +910,7 @@ class Agent:
         if rec.get("enc"):
             obj = {"type": "text", "text": text, "task": task, "mid": secrets.token_hex(12), "ts": time.time()}
             body["blob"] = crypto1.seal(self.c["priv1"], self.c["pub1"], rec["caller_pub1"], obj)
+            body["osig"] = self._osig(task, body["blob"], crypto1.CTX_A2A_REPLY)
         else:
             body["text"] = text
         self._api("POST", "/api/agent/a2a/reply", body)

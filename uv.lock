@@ -3,12 +3,12 @@ revision = 3
 requires-python = ">=3.9"
 resolution-markers = [
     "python_full_version >= '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version > '3.9' and python_full_version < '3.10' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version <= '3.9' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version >= '3.11' and platform_machine != 'x86_64') or (python_full_version >= '3.11' and sys_platform != 'darwin')",
+    "python_full_version == '3.10.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version == '3.10.*' and platform_machine != 'x86_64') or (python_full_version == '3.10.*' and sys_platform != 'darwin')",
+    "python_full_version > '3.9' and python_full_version < '3.10' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version > '3.9' and python_full_version < '3.10' and platform_machine != 'x86_64') or (python_full_version > '3.9' and python_full_version < '3.10' and sys_platform != 'darwin')",
+    "python_full_version <= '3.9' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version <= '3.9' and platform_machine != 'x86_64') or (python_full_version <= '3.9' and sys_platform != 'darwin')",
 ]
 
@@ -18,8 +18,8 @@ version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version > '3.9' and python_full_version < '3.10' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version <= '3.9' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version > '3.9' and python_full_version < '3.10' and platform_machine != 'x86_64') or (python_full_version > '3.9' and python_full_version < '3.10' and sys_platform != 'darwin')",
+    "python_full_version <= '3.9' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version <= '3.9' and platform_machine != 'x86_64') or (python_full_version <= '3.9' and sys_platform != 'darwin')",
 ]
 dependencies = [
@@ -118,8 +118,8 @@ version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version >= '3.11' and platform_machine != 'x86_64') or (python_full_version >= '3.11' and sys_platform != 'darwin')",
+    "python_full_version == '3.10.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version == '3.10.*' and platform_machine != 'x86_64') or (python_full_version == '3.10.*' and sys_platform != 'darwin')",
 ]
 dependencies = [
@@ -299,10 +299,10 @@ version = "48.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version > '3.9' and python_full_version < '3.10' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version >= '3.11' and platform_machine != 'x86_64') or (python_full_version >= '3.11' and sys_platform != 'darwin')",
+    "python_full_version == '3.10.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version == '3.10.*' and platform_machine != 'x86_64') or (python_full_version == '3.10.*' and sys_platform != 'darwin')",
+    "python_full_version > '3.9' and python_full_version < '3.10' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version > '3.9' and python_full_version < '3.10' and platform_machine != 'x86_64') or (python_full_version > '3.9' and python_full_version < '3.10' and sys_platform != 'darwin')",
 ]
 dependencies = [
@@ -368,8 +368,8 @@ version = "2.23"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version > '3.9' and python_full_version < '3.10' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version <= '3.9' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version > '3.9' and python_full_version < '3.10' and platform_machine != 'x86_64') or (python_full_version > '3.9' and python_full_version < '3.10' and sys_platform != 'darwin')",
+    "python_full_version <= '3.9' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
     "(python_full_version <= '3.9' and platform_machine != 'x86_64') or (python_full_version <= '3.9' and sys_platform != 'darwin')",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/fe/cf/d2d3b9f5699fb1e4615c8e32ff220203e43b248e1dfcc6736ad9057731ca/pycparser-2.23.tar.gz", hash = "sha256:78816d4f24add8f10a06d6f05b4d424ad9e96cfebf68a4ddc99c65c0720d00c2", size = 173734, upload-time = "2025-09-09T13:23:47.91Z" }
@@ -405,7 +405,7 @@ wheels = [
 
 [[package]]
 name = "switchboard-agent"
-version = "0.7.1"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography", version = "47.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version <= '3.9'" },

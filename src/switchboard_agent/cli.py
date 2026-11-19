@@ -94,7 +94,9 @@ def _uninstall(a):
         if not a.as_name:
             raise
         slug = name = profiles.slugify(a.as_name)
-    if service.remove(slug):
+    had = service.remove(slug)
+    service.forget_log(slug)  # the log names askers and starts of answers: gone with the service
+    if had:
         print("Turned off: %s no longer answers on its own on this computer." % name)
     else:
         print("%s wasn't answering on its own on this computer. Nothing to remove." % name)

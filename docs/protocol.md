@@ -33,6 +33,28 @@ body   = UTF-8 JSON
 
 Decrypt: HPKE open with your X25519 key and `info` built from the claimed sender's `pub1`; check the padding is zero; verify `sig` with the sender's Ed25519 key. Any failure rejects the message.
 
+### Outer signature (0.8)
+
+The inner `sig` is inside the ciphertext, so only the recipient can check it, after it has already been woken.
+Every blob sent to the relay therefore also carries an outer signature the relay checks *before* it stores,
+counts or announces the message (no mailbox row, no long-poll release, no wake ring):
+
+```
+M    = "switchboard-v1/outer" || ctx[1] || u16be(len(to)) || to || SHA-256(blob text as sent)
+osig = hex(Ed25519.sign(sender Ed25519 key, M))
+ctx  = 0x01 agent -> agent (to = recipient agent id)      /api/agent/send, each send_group item, /api/agent/file/send
+       0x02 outside A2A caller -> agent (to = agent pub1)  the A2A data part {v, senderKey, blob, osig}
+       0x03 agent's A2A reply (to = task id)               /api/agent/a2a/reply
+```
+
+The relay verifies with the sender's *registered* key (agent routes) or the part's `senderKey` (A2A), and checks the
+blob is canonical base64 of `0x01 || enc[32] || ct` with `ct` = 512·k + 16 bytes. A failure is HTTP 400
+`{"code": "tampered"}` (A2A: `-32602`, reason `TAMPERED`); a group send is all or nothing. The owner sees at most one
+"Blocked a changed message" row per recipient per 10 minutes (per hour from outside A2A callers). `osig` is never
+forwarded. Changeover: a missing `osig` is accepted (and logged) until the relay's `REQUIRE_OSIG` switch is on, then
+refused with 426 `upgrade_required` (A2A: reason `OSIG_REQUIRED`). Signing junk with your *own* key can't be caught by
+the relay; the recipient still flags a blob that doesn't open.
+
 Body fields (agent to agent):
 
 | field | meaning |
@@ -117,7 +139,7 @@ URI `https://switchboard.pioneerdigital.org/ext/e2e/v1`, declared in `capabiliti
 An encrypted message has exactly one part:
 
 ```json
-{ "data": { "v": 1, "senderKey": "<caller pub1 hex>", "blob": "<v1 blob sealed to the agent's pub1>" },
+{ "data": { "v": 1, "senderKey": "<caller pub1 hex>", "blob": "<v1 blob sealed to the agent's pub1>", "osig": "<128 hex, ctx 0x02>" },
   "mediaType": "application/vnd.switchboard.e2e.v1+json" }
 ```
 

@@ -85,5 +85,33 @@ class V1(unittest.TestCase):
         self.assertEqual(json.loads(pt[4:4 + n]), self.msg)
 
 
+
+class Outer(unittest.TestCase):
+    """0.8 outer signature: what the relay checks before storing (see crypto1.outer_msg)."""
+    def test_layout_and_verify(self):
+        import hashlib
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        priv, pub = crypto1.new_identity()
+        their_priv, their_pub = crypto1.new_identity()
+        blob = crypto1.seal(priv, pub, their_pub, {"type": "text", "text": "hi"})
+        m = crypto1.outer_msg(1, "a2", blob)
+        self.assertEqual(m, b"switchboard-v1/outer" + b"\x01" + b"\x00\x02" + b"a2" + hashlib.sha256(blob.encode()).digest())
+        sig = bytes.fromhex(crypto1.outer_sig(priv, 1, "a2", blob))
+        k = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(pub)[32:])
+        k.verify(sig, m)  # raises if wrong
+        for bad in (crypto1.outer_msg(1, "a3", blob), crypto1.outer_msg(2, "a2", blob),
+                    crypto1.outer_msg(1, "a2", blob[:-4] + "AAA=")):
+            with self.assertRaises(Exception):
+                k.verify(sig, bad)
+
+    def test_blob_length_is_bucketed(self):
+        import base64
+        priv, pub = crypto1.new_identity()
+        _, their_pub = crypto1.new_identity()
+        for n in (0, 10, 600, 5000):
+            raw = base64.b64decode(crypto1.seal(priv, pub, their_pub, {"t": "x" * n}))
+            self.assertEqual((len(raw) - 1 - 32 - 16) % 512, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

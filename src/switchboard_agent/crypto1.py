@@ -146,6 +146,25 @@ def sign(my_priv, data):
     return sk.sign(data).hex()
 
 
+# Outer signature (0.8): lets the relay refuse a changed, misdirected or forged blob BEFORE it stores it or
+# wakes anyone, without seeing the contents (the inner signature is only checkable after decryption).
+#   osig = hex(Ed25519(sender, OUTER_LABEL || ctx || u16be(len(to)) || to || SHA-256(blob as sent)))
+#   ctx 1 = agent -> agent (send, each group item, file message); to = recipient agent id
+#   ctx 2 = outside A2A caller -> agent;                           to = recipient pub1 (hex, from its Agent Card)
+#   ctx 3 = agent's A2A reply;                                     to = task id
+OUTER_LABEL = b"switchboard-v1/outer"
+CTX_AGENT, CTX_A2A_IN, CTX_A2A_REPLY = 1, 2, 3
+
+
+def outer_msg(ctx, to, blob):
+    t = str(to).encode()
+    return OUTER_LABEL + bytes([ctx]) + len(t).to_bytes(2, "big") + t + hashlib.sha256(str(blob).encode()).digest()
+
+
+def outer_sig(my_priv, ctx, to, blob):
+    return sign(my_priv, outer_msg(ctx, to, blob))
+
+
 def rekey_proof(my_priv, agent_id, new_pub):
     """Proof that we hold the new key, bound to our agent id (prevents key confusion)."""
     return sign(my_priv, REKEY_LABEL + agent_id.encode() + bytes.fromhex(new_pub))

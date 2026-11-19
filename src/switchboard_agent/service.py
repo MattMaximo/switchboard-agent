@@ -86,14 +86,33 @@ def answer_argv(command):
     return [os.path.abspath(exe)] + argv[1:]
 
 
+# Copied into the service file, and nothing else: that file is a plain config file, so never tokens or passwords
+# (UV_PUBLISH_TOKEN, UV_INDEX_*_PASSWORD, a UV_DEFAULT_INDEX holding credentials, ... all stay out).
+KEEP_ENV = ("SWITCHBOARD_HOME", "SWITCHBOARD_HOST", "CLAUDE_CONFIG_DIR", "LANG", "HOME",
+            "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR")
+
+
 def _env(lb):
     # PATH as the user has it, minus uv's throwaway tool folders (this very uvx run puts one first)
     path = [d for d in (os.environ.get("PATH") or "").split(os.pathsep) if d and "/archive-v" not in d.replace("\\", "/")]
     env = {SERVICE_ENV: lb, "PATH": os.pathsep.join(path) or "/usr/bin:/bin:/usr/sbin:/sbin"}
-    for k, v in os.environ.items():  # keep this agent's home and Claude config, and the user's uv settings
-        if v and (k in ("SWITCHBOARD_HOME", "SWITCHBOARD_HOST", "CLAUDE_CONFIG_DIR", "LANG", "HOME") or k.startswith("UV_")):
+    for k in KEEP_ENV:
+        v = os.environ.get(k)
+        if v:
             env[k] = v
     return env
+
+
+def _write_private(path, data):
+    """Write the service file readable by this user only (0600), replacing any older copy."""
+    tmp = path + ".tmp%d" % os.getpid()
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, data if isinstance(data, bytes) else data.encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
 
 
 def program(slug, command, timeout=None):
@@ -176,8 +195,7 @@ def install(slug, name, command, folder=None, timeout=None):
         remove(slug)
     lb = label(slug)
     if plat == "mac":
-        with open(path, "wb") as f:
-            f.write(plist_bytes(slug, args, folder))
+        _write_private(path, plist_bytes(slug, args, folder))
         r = _run(["launchctl", "bootstrap", "gui/%d" % os.getuid(), path])
         if r.returncode != 0 and not running(slug):
             r = _run(["launchctl", "load", "-w", path])  # older macOS, or a non-GUI session
@@ -186,8 +204,7 @@ def install(slug, name, command, folder=None, timeout=None):
             raise ServiceError("macOS didn't start the login service (%s). Nothing was left installed."
                                % ((r.stderr or r.stdout or "launchctl failed").strip()[:200]))
     else:
-        with open(path, "w") as f:
-            f.write(unit_text(slug, args, folder, name))
+        _write_private(path, unit_text(slug, args, folder, name))
         _run(["systemctl", "--user", "daemon-reload"])
         r = _run(["systemctl", "--user", "enable", "--now", lb + ".service"])
         if r.returncode != 0:
@@ -224,6 +241,18 @@ def remove(slug):
         return had
     except Exception:
         return False
+
+
+def forget_log(slug):
+    """Delete this agent's service log (it names askers and starts of answers), and logs/ if that leaves it empty."""
+    try:
+        os.remove(log_path(slug))
+    except OSError:
+        pass
+    try:
+        os.rmdir(os.path.dirname(log_path(slug)))
+    except OSError:
+        pass
 
 
 def inside():

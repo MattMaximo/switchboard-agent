@@ -137,7 +137,8 @@ def send(url, text, plain=False, name=None, ident=None, return_immediately=True,
         ident = ident or caller_identity()
         obj = {"type": "text", "text": text, "mid": secrets.token_hex(12), "ts": time.time()}
         blob = crypto1.seal(ident["priv1"], ident["pub1"], params["pub1"], obj)
-        msg["parts"] = [{"data": {"v": 1, "senderKey": ident["pub1"], "blob": blob}, "mediaType": MEDIA}]
+        osig = crypto1.outer_sig(ident["priv1"], crypto1.CTX_A2A_IN, params["pub1"], blob)
+        msg["parts"] = [{"data": {"v": 1, "senderKey": ident["pub1"], "blob": blob, "osig": osig}, "mediaType": MEDIA}]
         msg["extensions"] = [EXT]
     if name:
         msg["metadata"] = {EXT: {"senderName": name}}

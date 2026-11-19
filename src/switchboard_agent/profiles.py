@@ -176,7 +176,7 @@ def delete(slug):
         gone_id = _read_json(path_for(slug), {}).get("id")
     except ProfileError:
         gone_id = None
-    for ext in (".json", ".seen", ".pins", ".a2a", ".held", ".asks", ".asked", ".files"):
+    for ext in (".json", ".seen", ".pins", ".a2a", ".held", ".asks", ".asked", ".files", ".answering"):
         try:
             os.remove(os.path.join(agents_dir(), slug + ext))
         except FileNotFoundError:
@@ -187,6 +187,18 @@ def delete(slug):
                 os.remove(lp)
             except FileNotFoundError:
                 pass
+
+
+LOCK_PARTS = ("", ".held", ".asks", ".asked", ".answering", ".files", ".download")
+
+
+def delete_locks(slug):
+    """An agent that is gone leaves no lock files behind (each per-agent lock is ".<slug><part>.lock")."""
+    for part in LOCK_PARTS:
+        try:
+            os.remove(os.path.join(agents_dir(), "." + slug + part + ".lock"))
+        except OSError:
+            pass
 
 
 def migrate_legacy():
