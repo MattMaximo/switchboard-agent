@@ -5,7 +5,7 @@ import time
 
 from . import __version__
 from . import a2a as a2a_mod
-from .client import ASK_WAIT, Agent, SwitchboardError, ask_lines, clean, cmd_prefix, inbox_cmd, join, join_lines, peer_line, ping_line
+from .client import ASK_WAIT, Agent, SwitchboardError, ask_lines, clean, cmd_prefix, grok_next, inbox_cmd, is_grok, join, join_lines, peer_line, ping_line
 from .listen import ANSWER_TIMEOUT, Listener
 from .mcp import _fmt_inbox, files_lines, sent_files_line, serve
 from .profiles import all_profiles
@@ -116,8 +116,9 @@ def main(argv=None):
         if a.cmd == "mcp":
             return serve(a.as_name)
         if a.cmd == "join":
-            r = join(a.code, a.name, a.kind, a.host, hello=not a.no_hello)
-            print("\n".join(join_lines(r)))
+            grok = is_grok(a.kind)
+            r = join(a.code, a.name, a.kind, a.host, hello=not (a.no_hello or grok))  # Grok: no hello, it costs a turn
+            print("\n".join((join_lines(r)[:1] + grok_next(r)) if grok and r.get("approved", True) else join_lines(r)))
             return
         if a.cmd == "agents":
             ps = all_profiles()
