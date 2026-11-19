@@ -5,7 +5,9 @@ import time
 
 from . import __version__
 from . import a2a as a2a_mod
-from .client import ASK_WAIT, Agent, SwitchboardError, ask_lines, clean, cmd_prefix, grok_next, inbox_cmd, is_grok, join, join_lines, peer_line, ping_line
+from . import service
+from .client import (ASK_WAIT, Agent, SwitchboardError, ask_lines, cc_next, clean, cmd_prefix, grok_next, inbox_cmd,
+                     is_claude_code, is_grok, join, join_lines, peer_line, ping_line)
 from .listen import ANSWER_TIMEOUT, Listener
 from .mcp import _fmt_inbox, files_lines, sent_files_line, serve
 from .profiles import all_profiles
@@ -67,6 +69,37 @@ def _picture_nudge(ag, a):
             "2) run: %s avatar THAT_PATH%s. Never generate a new image." % (cmd_prefix(), _as_flag(a)))
 
 
+def _install(ag, a):
+    if not a.answer_with:
+        sys.exit('Switchboard: --install needs the command that answers, e.g. --answer-with "claude -p".')
+    slug, name = ag.c["slug"], ag.c["name"]
+    try:
+        path = service.install(slug, name, a.answer_with, timeout=a.answer_timeout if a.answer_timeout != ANSWER_TIMEOUT else None)
+    except service.ServiceError as e:
+        sys.exit("Switchboard: %s" % e)
+    import os
+    print("%s now answers your other agents' questions on its own, from %s. It starts when you log in and restarts "
+          "if it stops. It uses every tool on this computer without asking." % (name, os.getcwd()))
+    print("Questions that arrive while this computer is off are answered when it next starts.")
+    print("Turn it off: %s listen --as '%s' --uninstall" % (cmd_prefix(), clean(name).replace("'", "")))
+    print("(Service: %s, log: %s)" % (path, service.log_path(slug)))
+
+
+def _uninstall(a):
+    from . import profiles
+    try:
+        c = profiles.choose(a.as_name)
+        slug, name = c["slug"], c["name"]
+    except Exception:
+        if not a.as_name:
+            raise
+        slug = name = profiles.slugify(a.as_name)
+    if service.remove(slug):
+        print("Turned off: %s no longer answers on its own on this computer." % name)
+    else:
+        print("%s wasn't answering on its own on this computer. Nothing to remove." % name)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="switchboard", description="Private, encrypted messaging between your AI agents.")
     ap.add_argument("--version", action="version", version="switchboard-agent " + __version__)
@@ -76,7 +109,8 @@ def main(argv=None):
     j.add_argument("--name", required=True)
     j.add_argument("--kind", default="Agent")
     j.add_argument("--host", help=argparse.SUPPRESS)
-    j.add_argument("--no-hello", action="store_true", help="don't ping the other agents after joining")
+    j.add_argument("--hello", action="store_true", help="say hi to one other agent after joining (off by default)")
+    j.add_argument("--no-hello", action="store_true", help=argparse.SUPPRESS)  # the default since 0.7.8
     p = sp.add_parser("ping", help="say hi to one agent or --all")
     p.add_argument("name", nargs="?")
     p.add_argument("--all", action="store_true")
@@ -101,6 +135,10 @@ def main(argv=None):
                    help='answer questions from your other agents by running COMMAND with the question on stdin '
                         '(no shell), e.g. "hermes chat -Q --source tool --query-file -", "claude -p", "codex exec -"')
     l.add_argument("--answer-timeout", type=int, default=ANSWER_TIMEOUT, metavar="SECONDS")
+    l.add_argument("--install", action="store_true",
+                   help="answer on its own: install a login service that runs this listen command in this folder "
+                        "(macOS LaunchAgent / Linux systemd user unit); starts at login, restarts if it crashes")
+    l.add_argument("--uninstall", action="store_true", help="remove that login service")
     _as(l)
     k = sp.add_parser("ask", help='ask another of your agents a question and wait for the answer: ask NAME "question"')
     k.add_argument("name")
@@ -143,11 +181,16 @@ def main(argv=None):
         if a.cmd == "mcp":
             return serve(a.as_name)
         if a.cmd == "join":
-            grok = is_grok(a.kind)
-            r = join(a.code, a.name, a.kind, a.host, hello=not (a.no_hello or grok))  # Grok: no hello, it costs a turn
-            out = (join_lines(r)[:1] + grok_next(r)) if grok and r.get("approved", True) else join_lines(r)
-            if not grok and r.get("approved", True):
-                out.append('Tell your user in one line: "Connected to your Switchboard as %s." Then stop.' % clean(r["name"]))
+            r = join(a.code, a.name, a.kind, a.host, hello=a.hello and not a.no_hello)
+            ok = r.get("approved", True)
+            if ok and is_grok(r["kind"]):
+                out = join_lines(r)[:1] + grok_next(r)
+            elif ok and is_claude_code(r["kind"]) and r.get("hello") is None:
+                out = join_lines(r)[:1] + cc_next(r)
+            else:
+                out = join_lines(r)
+                if ok:
+                    out.append('Tell your user in one line: "Connected to your Switchboard as %s." Then stop.' % clean(r["name"]))
             print("\n".join(out))
             return
         if a.cmd == "agents":
@@ -171,7 +214,20 @@ def main(argv=None):
             r = a2a_mod.read_reply(t, card)
             print(_reply_line(t, r))
             return
-        ag = Agent(a.as_name)
+        if a.cmd == "listen" and a.uninstall:
+            return _uninstall(a)
+        try:
+            ag = Agent(a.as_name)
+        except SwitchboardError as e:
+            # a login service whose agent is gone from this computer: remove it instead of restarting forever
+            if a.cmd == "listen" and service.inside() and e.code in ("gone", "nomatch", "none") and a.as_name:
+                print("Switchboard: %s isn't on this computer anymore; removing its login service." % clean(a.as_name),
+                      file=sys.stderr, flush=True)
+                service.remove(a.as_name)
+                return
+            raise
+        if a.cmd == "listen" and a.install:
+            return _install(ag, a)
         if a.cmd == "status":
             me = ag.me()
             print('You: %s on %s\'s Switchboard (key %s)' % (me["name"], me["owner"], me["fingerprint"]))

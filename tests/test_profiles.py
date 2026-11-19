@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from switchboard_agent import a2a, client, crypto1, mcp, profiles
+from switchboard_agent import a2a, client, crypto1, mcp, profiles, service
 
 UPG = "uvx switchboard-agent@latest"
 
@@ -19,14 +19,25 @@ def fake(name, aid, host="https://x"):
     return {"name": name, "id": aid, "token": "u1.%s.s" % aid, "host": host, "owner": "Matt"}
 
 
+def no_services():
+    """Tests never touch the real launchd/systemd: every service-manager call fails as 'not loaded'."""
+    import subprocess
+    return mock.patch.object(service, "_run", lambda argv, detach=False: subprocess.CompletedProcess(argv, 1, "", "test"))
+
+
 class Home(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        self.env = mock.patch.dict(os.environ, {"SWITCHBOARD_HOME": self.d}, clear=False)
+        self.env = mock.patch.dict(os.environ, {"SWITCHBOARD_HOME": self.d, "CLAUDE_CONFIG_DIR": os.path.join(self.d, "claude")},
+                                   clear=False)
         self.env.start()
-        os.environ.pop("SWITCHBOARD_AS", None)
+        for k in ("SWITCHBOARD_AS", "SWITCHBOARD_CLAUDE_SKILLS", "SWITCHBOARD_SERVICE"):
+            os.environ.pop(k, None)
+        self.svc = no_services()
+        self.svc.start()
 
     def tearDown(self):
+        self.svc.stop()
         self.env.stop()
         shutil.rmtree(self.d)
 
@@ -205,7 +216,7 @@ class Upgrade(Home):
                 ag.inbox()
         self.assertEqual(str(cm.exception),
                          "Claude was removed from Matt's Switchboard by the owner. Local keys deleted. Nothing else to uninstall. "
-                         "If your user mentions Switchboard later, tell them they removed you; they can add you back with Add agent on their dashboard.")
+                         "If your user mentions Switchboard later, tell them they removed you; they can add you back with Add Agent on their dashboard.")
         self.assertEqual([p["name"] for p in profiles.all_profiles()], ["Codex"])
 
 
@@ -291,18 +302,18 @@ class Join(Home):
 
     def test_join_says_hi(self):
         srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1"), peer("Claude", "b2")])
-        r, lines = self.join(srv)
+        r, lines = self.join(srv, hello=True)
         self.assertEqual(srv.sent, ["b1"])  # one hello, not one per agent
         self.assertEqual(lines, ['Connected to Matt\'s Switchboard as "Grok".',
                                  "Said hi to 1 agent: Boo. Their replies will show up in: " + client.inbox_cmd(), USAGE])
 
     def test_join_alone(self):
-        r, lines = self.join(FakeServer(["Grok"], ["a2"]))
+        r, lines = self.join(FakeServer(["Grok"], ["a2"]), hello=True)
         self.assertEqual(lines, ['Connected to Matt\'s Switchboard as "Grok".', "No other agents on this network yet.", USAGE])
 
     def test_hello_failure_keeps_join(self):
         srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1")], fail_send=True)
-        r, lines = self.join(srv)
+        r, lines = self.join(srv, hello=True)
         self.assertEqual(profiles.choose()["id"], "a2")
         self.assertEqual(lines[2:], [USAGE])
         self.assertEqual(lines[1], "Couldn't say hi to Boo: Network error (simulated)")
@@ -313,14 +324,14 @@ class Join(Home):
         self.assertEqual(srv.sent, [])
         self.assertIn("Waiting for the owner to approve this agent on their dashboard.", lines)
 
-    def test_no_hello_flag(self):
+    def test_no_hello_by_default(self):
         srv = FakeServer(["Grok"], ["a2"], peers=[peer("Boo", "b1")])
-        r, lines = self.join(srv, hello=False)
+        r, lines = self.join(srv)
         self.assertEqual((srv.sent, lines[1:]), ([], [USAGE]))
 
     def test_several_agents_inbox_line_has_as(self):
         self.add("Codex", "a1")
-        r, lines = self.join(FakeServer(["Grok"], ["a2"], peers=[peer("Codex", "a1")]))
+        r, lines = self.join(FakeServer(["Grok"], ["a2"], peers=[peer("Codex", "a1")]), hello=True)
         self.assertIn('inbox --as "Grok"', lines[1])
 
     def test_invalid_token_deletes_only_that_profile(self):
@@ -364,8 +375,8 @@ class Join(Home):
         with mock.patch.object(client, "api", srv), mock.patch("sys.stdout", buf):
             from switchboard_agent import cli
             cli.main(["join", "abcdefgh", "--name", "Grok", "--host", "https://x"])
-        self.assertEqual(buf.getvalue().splitlines(), ['Connected to Matt\'s Switchboard as "Grok".',
-                                                       "Said hi to 1 agent: Boo. Their replies will show up in: " + client.inbox_cmd(), USAGE,
+        self.assertEqual(srv.sent, [])  # no hello for any kind during setup
+        self.assertEqual(buf.getvalue().splitlines(), ['Connected to Matt\'s Switchboard as "Grok".', USAGE,
                                                        'Tell your user in one line: "Connected to your Switchboard as Grok." Then stop.'])
 
 
@@ -610,7 +621,7 @@ class MCP(Home):
             msg = mcp.Server("Cursor").call("switchboard_join", {"code": "abcdefgh"})
         self.assertEqual(srv.joined[0]["name"], "Cursor")
         self.assertTrue(msg.startswith('Connected to Matt\'s Switchboard as "Cursor".'), msg)
-        self.assertIn("switchboard_inbox", msg)
+        self.assertEqual(srv.sent, [])  # MCP joins don't say hi either
 
     def test_mcp_unpinned_join_with_several_agents_says_pin(self):
         self.add("Codex", "a1")

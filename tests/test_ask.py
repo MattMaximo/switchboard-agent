@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest import mock
 
-from switchboard_agent import cli, client, crypto1, listen, mcp, profiles
+from switchboard_agent import cli, client, crypto1, listen, mcp, profiles, service
 
 PY = sys.executable
 
@@ -54,10 +54,14 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.tmp = tempfile.mkdtemp()
-        self.env = mock.patch.dict(os.environ, {"SWITCHBOARD_HOME": self.d}, clear=False)
+        self.env = mock.patch.dict(os.environ, {"SWITCHBOARD_HOME": self.d, "CLAUDE_CONFIG_DIR": os.path.join(self.d, "claude")},
+                                   clear=False)
         self.env.start()
-        for k in ("SWITCHBOARD_AS", client.ANSWERING_ENV):
+        for k in ("SWITCHBOARD_AS", client.ANSWERING_ENV, "SWITCHBOARD_CLAUDE_SKILLS", "SWITCHBOARD_SERVICE"):
             os.environ.pop(k, None)
+        import subprocess
+        self.svc = mock.patch.object(service, "_run", lambda argv, detach=False: subprocess.CompletedProcess(argv, 1, "", "test"))
+        self.svc.start()
         self.relay = Loop()
         self.patch = mock.patch.object(client, "api", self.relay)
         self.patch.start()
@@ -67,6 +71,7 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         self.patch.stop()
+        self.svc.stop()
         self.env.stop()
         shutil.rmtree(self.d)
         shutil.rmtree(self.tmp)

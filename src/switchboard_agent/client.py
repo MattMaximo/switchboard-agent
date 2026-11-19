@@ -20,7 +20,7 @@ import urllib.error
 import urllib.request
 
 from . import __version__
-from . import crypto1, files as files_mod, profiles
+from . import claude_skill, crypto1, files as files_mod, profiles, service
 from .files import FileError
 from .profiles import ProfileError
 
@@ -33,7 +33,7 @@ BLOCKED_JOIN = "Can't reach %s from here, so nothing was joined and your code is
 BLOCKED = "Can't reach %s from here. Check the connection and try again."
 
 REMOVED = ("%s was removed from %s's Switchboard by the owner. Local keys deleted. Nothing else to uninstall. "
-           "If your user mentions Switchboard later, tell them they removed you; they can add you back with Add agent on their dashboard.")
+           "If your user mentions Switchboard later, tell them they removed you; they can add you back with Add Agent on their dashboard.")
 GONE = "%s is no longer on this Switchboard, so its local keys were deleted. Ask your user for a new setup prompt."
 NOT_E2E = "not end-to-end encrypted"
 OLD_PEER = ("%s is on an old Switchboard version whose encryption is no longer supported, so nothing was sent. "
@@ -142,10 +142,56 @@ def inbox_cmd(as_value=None):
     return cmd_prefix() + " inbox" + (' --as "%s"' % as_value if as_value else "")
 
 
-def join(code, name, kind="Agent", host=None, mcp_as=None, hello=True):
+# Known kinds, tidied so the dashboard shows one clean name (a freehand "Claude Code CLI agent (Opus 5.5)"
+# became "Claude Code CLI agent (O" after the server's 24-character cut). First match wins.
+KINDS = [
+    (re.compile(r"claude[\s_-]*code|claude\b.*\bcli\b", re.I), "Claude Code"),
+    (re.compile(r"grok|\bxai\b|x\.ai", re.I), "Grok"),
+    (re.compile(r"codex", re.I), "Codex"),
+    (re.compile(r"hermes", re.I), "Hermes"),
+    (re.compile(r"open[\s_-]*code", re.I), "OpenCode"),
+    (re.compile(r"chat[\s_-]*gpt", re.I), "ChatGPT"),
+    (re.compile(r"cursor", re.I), "Cursor"),
+    (re.compile(r"gemini", re.I), "Gemini"),
+    (re.compile(r"^\s*claude\b(?!.*\b(code|cli)\b)", re.I), "Claude"),
+]
+
+
+def tidy_kind(kind):
+    k = clean(kind, 200) if kind else "Agent"
+    for rx, name in KINDS:
+        if rx.search(k):
+            return name
+    return k if k != "?" else "Agent"
+
+
+def is_claude_code(kind):
+    return tidy_kind(kind) == "Claude Code"
+
+
+def forget(slug, c=None):
+    """This agent is gone (left, removed by the owner, or unknown to the server): delete its keys, then its
+    Claude Code skill entry and its answer-on-its-own service. Never raises."""
+    c = c or {}
+    if service.inside():
+        import sys
+        sys.stderr.write("Switchboard: %s is no longer on this network; removing its login service.\n" % clean(c.get("name") or slug))
+        sys.stderr.flush()
+    try:
+        profiles.delete(slug)
+    finally:
+        if c.get("claude_skill"):
+            claude_skill.sync(c["claude_skill"], cmd_prefix())
+        service.remove(slug)  # last: inside the service this also ends this process
+
+
+def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False):
     """Register a new agent and save its profile. Replaces only a dead profile with the same host,
     network and name (see profiles.dead_same_name); never touches other agents' profiles.
-    Then says hi to the other agents unless it waits for approval. A failed hello never fails the join."""
+    No hello by default: setup must not wake, message or change any other agent (a hello woke sleeping
+    bots and left an auto-reply that kept the new agent's row on "Setting up"). hello=True says hi to one.
+    A Claude Code agent also gets its skill file (see claude_skill). A failed hello never fails the join."""
+    kind = tidy_kind(kind)
     profiles.migrate_legacy()  # so a legacy identity is preserved before we add another
     link = (code or "").strip()
     if not host and link.startswith(("https://", "http://localhost:", "http://127.0.0.1:")) and "/j/" in link:
@@ -167,19 +213,28 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=True):
          "pub1_published": r.get("pub1") == pub1, "created": int(time.time())}
     if mcp_as:
         p["mcp_as"] = mcp_as
+    old_skill = None
     with profiles.locked("join"):
         dead = profiles.dead_same_name(host, profiles.network_of(p), r["name"])
         if dead:
+            old_skill = profiles._read_json(profiles.path_for(dead), {}).get("claude_skill")
             profiles.delete(dead)  # its agent is gone; reuse the file name so --as keeps working
+            service.remove(dead)   # never let a dead agent's auto-answer service serve the new one
             p["slug"] = dead
             p["replaced"] = True
         else:
             p["slug"] = profiles.new_slug(r["name"])
+        skill = claude_skill.claim(p) if is_claude_code(kind) and r.get("approved", True) else None
         profiles.save(p)
+    if skill:
+        claude_skill.sync(skill, cmd_prefix())
+    if old_skill and old_skill != skill:  # the replaced profile's skill no longer lists it
+        claude_skill.sync(old_skill, cmd_prefix())
     ps = profiles.all_profiles()
     out = {"name": p["name"], "owner": p["owner"], "fingerprint": _fp(pub1), "slug": p["slug"],
            "approved": r.get("approved", True), "several": len(ps) > 1,
-           "as": profiles.as_value(p, ps), "replaced": bool(dead), "hello": None}
+           "as": profiles.as_value(p, ps), "replaced": bool(dead), "hello": None, "kind": kind,
+           "skill": skill if skill and os.path.exists(skill) else None}
     if hello and out["approved"]:
         try:
             # One hello, not one per agent: pinging everyone woke every sleeping Grok bot (each wake
@@ -215,6 +270,24 @@ def grok_next(r):
         'Please send me a follow-up message so I can give you the links to finish setup. You can just say "links".',
         '3. When they send it, reply with the routine\'s field links (not the Routines tab): "Webhook URL: LINK" and "Webhook key: LINK", and nothing else. Your routine sets your picture later on its own.',
         "Never ask your user to paste the key in chat, and don't read it yourself.",
+    ]
+
+
+def cc_next(r):
+    """A Claude Code agent's whole setup turn: one exact line, then stop (one turn, no extra inbox check).
+    The reply line comes last, and the usual reason to add more (explaining how to message later) is
+    answered first: the commands are saved in the switchboard skill (or, if the user has their own
+    skill there, on the line above)."""
+    who = str(r.get("as") or r["name"]).replace("'", "")
+    name = clean(r["name"])
+    later = ("Saved for later sessions: your switchboard skill has the commands (--as '%s')." % who if r.get("skill")
+             else "For later: %s ask|send|inbox --as '%s'" % (cmd_prefix(), who))
+    return [
+        later,
+        "",
+        "NEXT (Claude Code): setup is done. Your whole reply to your user is exactly this one line, "
+        "with nothing before or after it, then stop:",
+        "Connected to your Switchboard as %s." % name,
     ]
 
 
@@ -281,11 +354,12 @@ class Agent:
             return api(self.c["host"], method, path, body, token=self.c["token"], timeout=timeout, **kw)
         except SwitchboardError as e:
             if e.code == "removed_by_owner":
-                profiles.delete(self.c["slug"])
                 owner = e.data.get("owner") or self.c.get("owner") or "your"
-                raise SwitchboardError(REMOVED % (self.c["name"], owner), e.code, e.data)
+                err = SwitchboardError(REMOVED % (self.c["name"], owner), e.code, e.data)
+                forget(self.c["slug"], self.c)
+                raise err
             if e.code == "invalid_token" and e.data.get("http") == 401:
-                profiles.delete(self.c["slug"])  # the server says this agent doesn't exist; its keys are useless
+                forget(self.c["slug"], self.c)  # the server says this agent doesn't exist; its keys are useless
                 raise SwitchboardError(GONE % self.c["name"], e.code, e.data)
             raise
 
@@ -547,7 +621,7 @@ class Agent:
     def leave(self):
         """Remove this agent from the network and delete its local keys."""
         self._api("POST", "/api/agent/leave", {})
-        profiles.delete(self.c["slug"])
+        forget(self.c["slug"], self.c)
         return self.c["name"]
 
     def avatar(self, path=None, clear=False):

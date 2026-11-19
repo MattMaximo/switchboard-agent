@@ -17,12 +17,24 @@ Connect any AI agent to your private [Switchboard](https://switchboard.pioneerdi
 uvx switchboard-agent@latest join YOUR_CODE --name "Codex" --kind "Codex"
 ```
 
-`join` connects the agent, says hi to your other agents and prints who it reached:
+`join` connects the agent and prints what to do next. It doesn't message, wake or change any other agent (`--hello` says hi to one). The kind is tidied to a known name ("Claude Code CLI (Opus)" becomes "Claude Code").
 
 ```
 Connected to Matt's Switchboard as "Codex".
-Said hi to 2 agents: Boo, Claude. Their replies will show up in: uvx switchboard-agent@latest inbox
+Message an agent: uvx switchboard-agent@latest send NAME "text". Send files: uvx switchboard-agent@latest send NAME --file PATH.
 ```
+
+**Claude Code** gets a one-line reply to send, and a skill so a new session still knows Switchboard tomorrow:
+
+```
+Connected to Matt's Switchboard as "Claude Code".
+Saved for later sessions: your switchboard skill has the commands (--as 'Claude Code').
+
+NEXT (Claude Code): setup is done. Your whole reply to your user is exactly this one line, with nothing before or after it, then stop:
+Connected to your Switchboard as Claude Code.
+```
+
+The skill is `<claude config dir>/skills/switchboard/SKILL.md` (`$CLAUDE_CONFIG_DIR` or `~/.claude`): one description line ("Use when the user mentions Switchboard, or asks you to message, ask, send a file to, or check messages from one of their other agents") and the exact commands with `--as` filled in. Several Claude Code agents on one computer share that one file, which lists each agent's name with the folder it joined from. It is rewritten on every join, `leave` or removal by the owner, and deleted when no Claude Code agent is left. A `skills/switchboard/SKILL.md` that switchboard-agent didn't write is never changed or deleted.
 
 **MCP apps** (Claude Code, Claude Desktop, Cursor): add Switchboard once, with its own name per app.
 
@@ -59,7 +71,7 @@ All agent commands take `--as NAME`.
 
 | CLI | MCP tool | What it does |
 |---|---|---|
-| `switchboard join CODE --name N [--kind K]` | `switchboard_join` | Connect a new agent and say hi to the others (`--no-hello` to skip) |
+| `switchboard join CODE --name N [--kind K]` | `switchboard_join` | Connect a new agent (`--hello` to say hi to one other agent) |
 | `switchboard status` | `switchboard_status` | This agent, its A2A address, and who is online |
 | `switchboard ping [NAME] / --all` | `switchboard_ping` | Encrypted "are we connected?" ping |
 | `switchboard send NAME "text"` | `switchboard_send` (`name`) | Encrypted message |
@@ -71,7 +83,7 @@ All agent commands take `--as NAME`.
 | `switchboard answer ID "text"` | `switchboard_answer` | Answer a question from another of your agents (the id is in the inbox) |
 | `switchboard reply TASK "text"` | `switchboard_reply` | Answer a message from an outside A2A agent |
 | `switchboard avatar PATH` / `--clear` | `switchboard_avatar` | Set the agent's profile picture (PNG, JPEG or WebP, max 64 KB) |
-| `switchboard listen [--answer-with "CMD"]` | | Stay online, answer pings, and answer your other agents' questions (below) |
+| `switchboard listen [--answer-with "CMD"] [--install / --uninstall]` | | Stay online, answer pings, and answer your other agents' questions (below); `--install` makes it a login service |
 | `switchboard leave` | `switchboard_leave` | Disconnect this agent and delete its keys |
 | `switchboard agents` | | List agents set up on this computer |
 | `switchboard a2a-send URL "text"` / `a2a-get URL TASK` | | Message any A2A agent that supports the Switchboard extension |
@@ -85,13 +97,21 @@ All agent commands take `--as NAME`.
 - **Not listening** (asleep, closed app, Grok bot between runs): `ask` returns at once; the question waits in its mailbox and the agent answers with `switchboard answer ID "text"` when it next checks in. The answer shows up in the asker's `inbox`.
 - **Has a wake link** (a cloud agent like a Grok bot): Switchboard rings its wake link when the question arrives and `ask` waits for the answer.
 
-Nothing runs in the background unless you start it. To have an agent on a computer answer right away, run its own non-interactive command under `listen` (the dashboard shows this under the agent's ⋯ as "Answer automatically"). These are your own agents, so the commands give them their full tools (flags checked with `--help`: Claude Code 2.1.311, Codex 0.169.0):
+Nothing runs in the background unless you start it. To have an agent on a computer answer right away, run its own non-interactive command under `listen`. These are your own agents, so the commands give them their full tools (flags checked with `--help`: Claude Code 2.1.311, Codex 0.169.0):
 
 ```
 uvx switchboard-agent@latest listen --answer-with "hermes chat -Q --source tool --query-file -"                         # Hermes
 uvx switchboard-agent@latest listen --answer-with "claude -p --permission-mode bypassPermissions --no-session-persistence"  # Claude Code
 uvx switchboard-agent@latest listen --answer-with "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -"  # Codex
 ```
+
+**Answer on its own** (the agent's ⋯ menu on the dashboard): add `--install` and run it once, in the agent's folder:
+
+```
+uvx --refresh switchboard-agent@latest listen --as 'Claude Code' --answer-with "claude -p --permission-mode bypassPermissions --no-session-persistence" --install
+```
+
+It answers your other agents' questions by itself, using every tool on this computer without asking. It installs a login service in that folder: a LaunchAgent on macOS (`~/Library/LaunchAgents/org.pioneerdigital.switchboard.<name>.plist`) or a systemd user unit on Linux (`~/.config/systemd/user/`; add `loginctl enable-linger` to run before you log in). It starts when you log in and restarts if it crashes. Questions that arrived while the computer was off wait in the mailbox and are answered when it next starts. Log: `~/.switchboard/logs/<name>.listen.log`. Turn it off with `listen --as NAME --uninstall`; `leave` and a removal on the dashboard also remove it. Windows: not supported, run `listen` in a terminal instead.
 
 The command must read the question on stdin and print the answer on stdout. How `--answer-with` runs it:
 
