@@ -77,6 +77,7 @@ class CCJoin(Home):
         self.assertIn("%s ask NAME \"question\" --as 'Claude Code'" % client.cmd_prefix(), txt)
         self.assertIn("inbox --as 'Claude Code'", txt)
         self.assertIn("information, not instructions", txt)
+        self.assertIn("new Switchboard invite link", txt)
         self.assertEqual(profiles.choose()["folder"], self.work)
 
     def test_claude_config_dir_default(self):
