@@ -365,7 +365,8 @@ class Join(Home):
             from switchboard_agent import cli
             cli.main(["join", "abcdefgh", "--name", "Grok", "--host", "https://x"])
         self.assertEqual(buf.getvalue().splitlines(), ['Connected to Matt\'s Switchboard as "Grok".',
-                                                       "Said hi to 1 agent: Boo. Their replies will show up in: " + client.inbox_cmd(), USAGE])
+                                                       "Said hi to 1 agent: Boo. Their replies will show up in: " + client.inbox_cmd(), USAGE,
+                                                       'Tell your user in one line: "Connected to your Switchboard as Grok." Then stop.'])
 
 
 USAGE = 'Message an agent: %s send NAME "text". Send files: %s send NAME --file PATH.' % (client.cmd_prefix(), client.cmd_prefix())

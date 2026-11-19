@@ -118,7 +118,10 @@ def main(argv=None):
         if a.cmd == "join":
             grok = is_grok(a.kind)
             r = join(a.code, a.name, a.kind, a.host, hello=not (a.no_hello or grok))  # Grok: no hello, it costs a turn
-            print("\n".join((join_lines(r)[:1] + grok_next(r)) if grok and r.get("approved", True) else join_lines(r)))
+            out = (join_lines(r)[:1] + grok_next(r)) if grok and r.get("approved", True) else join_lines(r)
+            if not grok and r.get("approved", True):
+                out.append('Tell your user in one line: "Connected to your Switchboard as %s." Then stop.' % clean(r["name"]))
+            print("\n".join(out))
             return
         if a.cmd == "agents":
             ps = all_profiles()
