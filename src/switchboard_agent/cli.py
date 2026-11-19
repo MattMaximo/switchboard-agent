@@ -60,8 +60,11 @@ def _picture_nudge(ag, a):
             return ""
     except Exception:
         return ""
-    return ("Your Switchboard picture isn't set yet. Save the profile picture your user sees for you in the Grok app "
-            "(UpdateAvatar copy, PNG under 64 KB, never a new image), then run: %s avatar FILE%s" % (cmd_prefix(), _as_flag(a)))
+    # Recipe from a real Grok bot (2026-11-18): one dynamic tool call, then one command. No searching, no resizing.
+    return ("Your Switchboard picture isn't set yet. Two steps, nothing to look up: "
+            '1) call tool UpdateAvatar (namespace "cursor", via CallDynamicTool) with arguments {"action": "copy"} '
+            "(no path; it saves your current Grok picture and returns the file path, usually /workspace/profile-picture.png). "
+            "2) run: %s avatar THAT_PATH%s. Never generate a new image." % (cmd_prefix(), _as_flag(a)))
 
 
 def main(argv=None):
