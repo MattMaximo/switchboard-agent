@@ -208,6 +208,25 @@ def forget(slug, c=None):
         service.remove(slug)  # last: inside the service this also ends this process
 
 
+def prune_dead(host=None, timeout=6):
+    """Remove local agents the server says are gone (deleted on the dashboard while this computer was asleep or
+    the session-based agent never checked in again). Each one is asked once; Agent._api forgets it (keys, Claude
+    Code skill, auto-answer service) on removed_by_owner / invalid_token. Network problems change nothing.
+    Returns the names removed."""
+    gone = []
+    for p in profiles.all_profiles():
+        if host and p.get("host") != host:
+            continue
+        try:
+            Agent(p["slug"])._api("GET", "/api/agent/me", timeout=timeout)
+        except SwitchboardError as e:
+            if e.code in ("removed_by_owner", "invalid_token"):
+                gone.append(p.get("name") or p["slug"])
+        except Exception:
+            pass
+    return gone
+
+
 def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=None, via=None, timeout=40):
     """Register a new agent and save its profile. Replaces only a dead profile with the same host,
     network and name (see profiles.dead_same_name); never touches other agents' profiles.
@@ -222,6 +241,7 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=
     if not host and link.startswith(("https://", "http://localhost:", "http://127.0.0.1:")) and "/j/" in link:
         host = link.split("/j/")[0]
     host = (host or os.environ.get("SWITCHBOARD_HOST") or DEFAULT_HOST).rstrip("/")
+    prune_dead(host)  # a deleted agent's leftovers (keys, skill) must not block or rename the new one
     priv1, pub1 = crypto1.new_identity()
     body = {"code": normalize_code(code), "name": name, "kind": kind, "pub1": pub1,
             "proof1": crypto1.join_proof(priv1, pub1), "client": "switchboard-agent/" + __version__}

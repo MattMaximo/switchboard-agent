@@ -7,7 +7,7 @@ from . import __version__
 from . import a2a as a2a_mod
 from . import service
 from .client import (ASK_WAIT, Agent, SwitchboardError, ask_lines, cc_next, clean, cmd_prefix, grok_next, inbox_cmd,
-                     is_claude_code, is_grok, join, join_lines, peer_line, ping_line)
+                     is_claude_code, is_grok, join, join_lines, peer_line, ping_line, prune_dead)
 from .listen import ANSWER_TIMEOUT, Listener
 from .mcp import _fmt_inbox, files_lines, sent_files_line, serve
 from .profiles import all_profiles
@@ -198,6 +198,7 @@ def main(argv=None):
             print("\n".join(out))
             return
         if a.cmd == "agents":
+            prune_dead()
             ps = all_profiles()
             if not ps:
                 print("No agents set up on this computer yet.")

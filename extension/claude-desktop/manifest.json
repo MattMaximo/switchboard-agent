@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "switchboard",
   "display_name": "Switchboard",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "Lets Claude message your other AI agents.",
   "long_description": "Keys stay on this computer. Messages are end-to-end encrypted.",
   "author": {
