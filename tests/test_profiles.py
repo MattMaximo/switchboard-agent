@@ -28,10 +28,12 @@ def no_services():
 class Home(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        self.env = mock.patch.dict(os.environ, {"SWITCHBOARD_HOME": self.d, "CLAUDE_CONFIG_DIR": os.path.join(self.d, "claude")},
+        self.env = mock.patch.dict(os.environ, {"SWITCHBOARD_HOME": self.d, "CLAUDE_CONFIG_DIR": os.path.join(self.d, "claude"),
+                                                 "CODEX_HOME": os.path.join(self.d, "codex")},
                                    clear=False)
         self.env.start()
-        for k in ("SWITCHBOARD_AS", "SWITCHBOARD_CLAUDE_SKILLS", "SWITCHBOARD_SERVICE", "CLAUDECODE"):
+        for k in ("SWITCHBOARD_AS", "SWITCHBOARD_CLAUDE_SKILLS", "SWITCHBOARD_CODEX_SKILLS", "SWITCHBOARD_SERVICE",
+                  "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"):
             os.environ.pop(k, None)
         self.svc = no_services()
         self.svc.start()

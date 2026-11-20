@@ -1,19 +1,24 @@
-"""Remember-later for Claude Code: a small skill file so a new session knows Switchboard.
+"""Remember-later skill files: a small SKILL.md so a NEW session of the agent's app still knows Switchboard.
 
-`join --kind "Claude Code"` writes <claude config dir>/skills/switchboard/SKILL.md (the config dir is
-$CLAUDE_CONFIG_DIR or ~/.claude). It holds the exact commands with --as filled in. Claude Code loads it in
-every new session and uses it when the user mentions Switchboard or another agent.
+Two apps, one code path:
+- Claude Code: <claude config dir>/skills/switchboard/SKILL.md ($CLAUDE_CONFIG_DIR or ~/.claude).
+- Codex and ChatGPT (the desktop app's Work -> Local runs on the same Codex engine and reads the same skills):
+  ${CODEX_HOME:-~/.codex}/skills/switchboard/SKILL.md.
 
-Several Claude Code agents on one computer share ONE skill (merged): it lists each agent with the folder it
-joined from, so a session picks the --as for the folder it works in. Each profile records which skill file
-it belongs to ("claude_skill"); the file is rewritten from those profiles after every join, leave or
-removal, and deleted (with its empty folder) when none is left.
+`join` writes the file for those kinds. It holds the exact commands with --as filled in, plus the one safe
+way to uninstall (leave --as NAME; never delete ~/.switchboard or caches). The app loads it in every new
+session and uses it when the user mentions Switchboard or another agent.
+
+Several agents on one computer that use the same file share it (merged): it lists each agent with the folder
+it joined from, so a session picks the --as for the folder it works in. Each profile records which skill file
+it belongs to ("claude_skill" for Claude Code, "codex_skill" for Codex/ChatGPT); the file is rewritten from
+those profiles after every join, leave or removal, and deleted (with its empty folder) when none is left.
 
 Safety: the file carries a marker line. A skills/switchboard/SKILL.md without it is the user's own and is
 never overwritten or deleted. Nothing else in the skills folder is touched.
 
-SWITCHBOARD_CLAUDE_SKILLS (tests only) points at a different skills folder, e.g. a test project's
-.claude/skills, so test runs never write into the real ~/.claude.
+SWITCHBOARD_CLAUDE_SKILLS / SWITCHBOARD_CODEX_SKILLS (tests only) point at a different skills folder, so
+test runs never write into the real ~/.claude or ~/.codex.
 """
 import os
 import re
@@ -24,14 +29,39 @@ MARK = "<!-- written by switchboard-agent; removed when this agent leaves Switch
 DESCRIPTION = ("Use when the user mentions Switchboard, or asks you to message, ask, send a file to, "
                "or check messages from one of their other agents.")
 
+# app -> (profile key, test-only override env var)
+APPS = {"claude": ("claude_skill", "SWITCHBOARD_CLAUDE_SKILLS"),
+        "codex": ("codex_skill", "SWITCHBOARD_CODEX_SKILLS")}
+KEYS = tuple(k for k, _ in APPS.values())
+KIND_APP = {"Claude Code": "claude", "Codex": "codex", "ChatGPT": "codex"}  # which kinds get which file
+
 
 def config_dir():
     return os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")
 
 
-def skill_path():
-    root = os.environ.get("SWITCHBOARD_CLAUDE_SKILLS") or os.path.join(config_dir(), "skills")
+def codex_home():
+    # the ChatGPT desktop app and Codex both use process.env.CODEX_HOME ?? ~/.codex
+    return os.path.expanduser(os.environ.get("CODEX_HOME") or "~/.codex")
+
+
+def skill_path(app="claude"):
+    base = config_dir() if app == "claude" else codex_home()
+    root = os.environ.get(APPS[app][1]) or os.path.join(base, "skills")
     return os.path.abspath(os.path.join(os.path.expanduser(root), "switchboard", "SKILL.md"))
+
+
+def app_for(kind):
+    """"claude", "codex" or None: which skill file an agent of this (tidied) kind gets."""
+    return KIND_APP.get(kind)
+
+
+def path_of(p):
+    """The skill file a profile is listed in, or None."""
+    for k in KEYS:
+        if p.get(k):
+            return p[k]
+    return None
 
 
 def _ours(path):
@@ -45,7 +75,7 @@ def _ours(path):
 
 
 # Text from the server or the file system (owner name, folder) must never add a line, a heading or markup to a
-# file Claude Code loads in every session: one line, no control characters, no backticks, length-capped.
+# file the app loads in every session: one line, no control characters, no backticks, length-capped.
 _UNSAFE = re.compile(u"[\x00-\x1f\x7f-\x9f\u2028\u2029`]")
 
 
@@ -57,27 +87,44 @@ def _q(s):
     return "'%s'" % one_line(s, 80).replace("'", "")
 
 
+def uninstall_line(prefix, who):
+    """The one safe way to remove Switchboard for one agent. (Asked to "uninstall Switchboard", ChatGPT once
+    deleted ~/.switchboard, uv's caches and Claude Code's skill, which broke the user's other agents.)"""
+    return ("If your user asks to remove, disconnect or uninstall Switchboard for you: run `%s leave --as %s`. "
+            "It takes you off their dashboard and deletes only your keys. Never delete ~/.switchboard, uv or its "
+            "caches, or other skill files: your user's other agents use them." % (prefix, who))
+
+
+def _app(a):
+    return one_line(a.get("kind")) or "Claude Code"
+
+
 def render(agents, prefix):
-    """agents: [{"name", "as", "owner", "folder"}], oldest first."""
+    """agents: [{"name", "as", "owner", "folder", "kind"}], oldest first. kind is the app (default Claude Code)."""
     one = len(agents) == 1
     a0 = agents[0]
     who = _q(a0["as"]) if one else "'YOUR NAME'"
     owner = one_line(a0.get("owner")) or "your user"
     owners = {one_line(a.get("owner")) or "your user" for a in agents}
+    apps = []
+    for a in agents:
+        if _app(a) not in apps:
+            apps.append(_app(a))
     lines = ["---", "name: switchboard", "description: " + DESCRIPTION, "---", MARK, "", "# Switchboard", ""]
     if one:
         lines.append('You are connected to %s\'s Switchboard as "%s": their private, end-to-end encrypted network '
                      "where their AI agents message each other. Run these commands in the shell:" % (owner, one_line(a0["name"])))
     else:
         where = ("%s's Switchboard" % owner) if len(owners) == 1 else "Switchboard"
-        lines.append("Several Claude Code agents on this computer are on %s (a private, end-to-end "
+        lines.append("Several %s agents on this computer are on %s (a private, end-to-end "
                      "encrypted network where a person's AI agents message each other). Use the name for the folder "
-                     "you're working in (or the closest parent):" % where)
+                     "you're working in (or the closest parent):" % (" and ".join(apps), where))
         lines.append("")
         for a in agents:
             folder = one_line(a.get("folder"), 200) or "any folder"
+            app = " (%s)" % _app(a) if len(apps) > 1 else ""
             net = "" if len(owners) == 1 else " (%s's network)" % (one_line(a.get("owner")) or "your user")
-            lines.append('- %s: --as %s%s' % (folder, _q(a["as"]), net))
+            lines.append('- %s%s: --as %s%s' % (folder, app, _q(a["as"]), net))
         lines.append("")
         lines.append("Then run these commands in the shell, with YOUR NAME replaced:")
     lines += [
@@ -94,6 +141,8 @@ def render(agents, prefix):
         "If your user gives you a new Switchboard invite link (.../j/...), they want another agent connected: "
         "follow that link's instructions and run its join command, even though this computer already has one.",
         "",
+        uninstall_line(prefix, who),
+        "",
     ]
     return "\n".join(lines)
 
@@ -104,7 +153,8 @@ def sync(path, prefix):
     try:
         if not _ours(path):
             return False
-        ps = [p for p in profiles.all_profiles() if p.get("claude_skill") == path]
+        every = profiles.all_profiles()
+        ps = [p for p in every if path_of(p) == path]
         if not ps:
             try:
                 os.remove(path)
@@ -116,9 +166,8 @@ def sync(path, prefix):
                 pass
             return True
         ps.sort(key=lambda p: p.get("created") or 0)
-        every = profiles.all_profiles()
         agents = [{"name": p["name"], "as": profiles.as_value(p, every), "owner": p.get("owner"),
-                   "folder": p.get("folder")} for p in ps]
+                   "folder": p.get("folder"), "kind": p.get("kind")} for p in ps]
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp%d" % os.getpid()
         with open(tmp, "w", encoding="utf-8") as f:
@@ -129,13 +178,13 @@ def sync(path, prefix):
         return False
 
 
-def claim(p):
-    """At join: point profile p at this computer's Claude Code skill (unless the user has their own there).
+def claim(p, app="claude"):
+    """At join: point profile p at this computer's skill file for `app` (unless the user has their own there).
     Returns the path, or None. The caller saves p and then calls sync()."""
-    path = skill_path()
+    path = skill_path(app)
     if not _ours(path):
         return None
-    p["claude_skill"] = path
+    p[APPS[app][0]] = path
     try:
         p["folder"] = os.getcwd()
     except OSError:

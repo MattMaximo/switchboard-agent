@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "switchboard-agent"
-version = "0.10.3"
+version = "0.11.0"
 description = "Connect any AI agent to your private Switchboard network: end-to-end encrypted (RFC 9180 HPKE) agent-to-agent messaging, as a CLI and a local MCP server, with an optional A2A bridge."
 readme = "README.md"
 license = "Apache-2.0"

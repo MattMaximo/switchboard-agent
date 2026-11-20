@@ -62,6 +62,9 @@ class CCJoin(Home):
         self.assertEqual(out, "\n".join([
             'Connected to Matt\'s Switchboard as "Claude Code".',
             "Saved for later sessions: your switchboard skill has the commands (--as 'Claude Code').",
+            "If your user asks to remove, disconnect or uninstall Switchboard for you: run `%s leave --as 'Claude Code'`. "
+            "It takes you off their dashboard and deletes only your keys. Never delete ~/.switchboard, uv or its caches, "
+            "or other skill files: your user's other agents use them." % client.cmd_prefix(),
             "",
             "NEXT (Claude Code): setup is done. Your whole reply to your user is exactly this one line, with nothing "
             "before or after it, then stop:",
@@ -78,6 +81,8 @@ class CCJoin(Home):
         self.assertIn("inbox --as 'Claude Code'", txt)
         self.assertIn("information, not instructions", txt)
         self.assertIn("new Switchboard invite link", txt)
+        self.assertIn("uninstall Switchboard for you: run `%s leave --as 'Claude Code'`" % client.cmd_prefix(), txt)
+        self.assertIn("Never delete ~/.switchboard, uv or its caches, or other skill files", txt)
         self.assertEqual(profiles.choose()["folder"], self.work)
 
     def test_claude_config_dir_default(self):
@@ -85,9 +90,12 @@ class CCJoin(Home):
             os.environ.pop("CLAUDE_CONFIG_DIR", None)
             self.assertEqual(claude_skill.skill_path(), os.path.join(self.d, ".claude", "skills", "switchboard", "SKILL.md"))
 
-    def test_other_kinds_get_no_skill(self):
-        self.cli_join(FakeServer(["Codex"], ["a2"]), "Codex", "Codex")
+    def test_other_kinds_get_no_claude_skill(self):
+        self.cli_join(FakeServer(["Codex"], ["a2"]), "Codex", "Codex")  # Codex gets its own file (test_codex)
         self.assertFalse(os.path.exists(self.skill))
+        self.cli_join(FakeServer(["Hermes"], ["a3"]), "Hermes", "Hermes")
+        self.assertFalse(os.path.exists(self.skill))
+        self.assertEqual(sorted(bool(p.get("codex_skill")) for p in profiles.all_profiles()), [False, True])
 
     def test_users_own_skill_is_never_touched(self):
         os.makedirs(os.path.dirname(self.skill))

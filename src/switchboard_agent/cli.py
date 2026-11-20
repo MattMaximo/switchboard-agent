@@ -6,8 +6,8 @@ import time
 from . import __version__
 from . import a2a as a2a_mod
 from . import service
-from .client import (ASK_WAIT, Agent, SwitchboardError, ask_lines, cc_next, clean, cmd_prefix, grok_next, inbox_cmd,
-                     is_claude_code, is_grok, join, join_lines, peer_line, ping_line, prune_dead)
+from .client import (ASK_WAIT, Agent, SwitchboardError, ask_lines, cc_next, clean, cmd_prefix, grok_next, has_next,
+                     inbox_cmd, is_grok, join, join_lines, peer_line, ping_line, prune_dead)
 from .listen import ANSWER_TIMEOUT, Listener
 from .mcp import _fmt_inbox, files_lines, sent_files_line, serve
 from .profiles import all_profiles
@@ -170,7 +170,8 @@ def main(argv=None):
     xg = sp.add_parser("a2a-get", help="fetch the reply to an earlier a2a-send")
     xg.add_argument("url")
     xg.add_argument("task")
-    lv = sp.add_parser("leave", help="disconnect this agent and delete its keys (run before uninstalling)")
+    lv = sp.add_parser("leave", help="disconnect this agent and delete only its keys and skill entry (this is how to "
+                                    "uninstall Switchboard for one agent; other agents on this computer are unchanged)")
     _as(lv)
     m = sp.add_parser("mcp", help="run as a local MCP server (stdio)")
     _as(m)
@@ -189,7 +190,7 @@ def main(argv=None):
             ok = r.get("approved", True)
             if ok and is_grok(r["kind"]):
                 out = join_lines(r)[:1] + grok_next(r)
-            elif ok and is_claude_code(r["kind"]) and r.get("hello") is None:
+            elif ok and has_next(r["kind"]) and r.get("hello") is None:
                 out = join_lines(r)[:1] + cc_next(r)
             else:
                 out = join_lines(r)
@@ -252,7 +253,8 @@ def main(argv=None):
             for r in rs:
                 print(ping_line(r))
         elif a.cmd == "leave":
-            print('"%s" left the network and its local keys were deleted. You can now uninstall.' % ag.leave())
+            print('"%s" left your Switchboard and its keys were deleted. Your other agents on this computer are unchanged.'
+                  % clean(ag.leave()))
         elif a.cmd == "send":
             if a.file:
                 if a.to or a.all:

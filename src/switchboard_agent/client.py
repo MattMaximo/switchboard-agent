@@ -31,9 +31,17 @@ UPGRADE = "uvx switchboard-agent@latest"
 # Where this runs is blocked (a cloud sandbox): the agent tells its user one short line for its own case.
 HELP_WHERE = ("Reply to your user with exactly one short line for your case, then stop. Claude: \"In the Claude "
               "desktop app, add Switchboard (one download): %s then open the file and click Install. Or use "
-              "its Code tab set to Local.\" ChatGPT: \"In the ChatGPT desktop app, switch to Work, choose Local and a "
-              "folder, then paste your message again.\" Anything else: say in one line that you can't connect from where you run.")
+              "its Code tab set to Local.\" ChatGPT: \"In the ChatGPT desktop app on your computer, switch to Work, "
+              "set it to Local and pick a folder, then paste your message again.\" Anything else: say in one line that you can't connect from where you run.")
 BLOCKED_JOIN = "Can't reach %s from here, so nothing was joined and your code is still good. " + HELP_WHERE
+# Inside Codex's sandbox (its shell sets CODEX_SANDBOX, and CODEX_SANDBOX_NETWORK_DISABLED=1 without network) the
+# fix is to rerun outside the sandbox, not the ChatGPT "switch to Work" line.
+CODEX_NO_NET = ("You're inside Codex's sandbox without network. Nothing was used up. Run this same join command again "
+                "with approval to go outside the sandbox.")
+CODEX_NO_WRITE = ("You're inside Codex's sandbox, which can't save Switchboard's keys in %s. Nothing was used up. Run this "
+                  "same join command again with approval to go outside the sandbox. Don't change SWITCHBOARD_HOME.")
+NO_WRITE = ("Can't save Switchboard's keys in %s (%s), so nothing was joined and your invite is still good. Run the "
+            "same join command again where it can write that folder. Don't change SWITCHBOARD_HOME.")
 BLOCKED = "Can't reach %s from here. Check the connection and try again."
 
 REMOVED = ("%s was removed from %s's Switchboard by the owner. Local keys deleted. Nothing else to uninstall. "
@@ -179,10 +187,28 @@ def tidy_kind(kind):
     return k if k != "?" else "Agent"
 
 
-def join_kind(kind):
-    """The kind join registers: tidied, and "Claude Code" when join runs inside Claude Code (its shell sets
-    CLAUDECODE=1) and the agent called itself just "Claude" or nothing specific."""
+# Kinds that say nothing about the app ("AI coding agent" came out 5 of 5 times in Codex with the command line).
+GENERIC_KIND = re.compile(r"^\s*(?:an?\s+)?(?:ai\s+|llm\s+)?(?:coding\s+|code\s+)?(?:agent|assistant|bot)?\s*$|"
+                          r"^\s*what\s+you\s+are\s*$|^\s*(?:openai\b.*|gpt[\s_-]?\d.*)$", re.I)
+CHATGPT = re.compile(r"chat[\s_-]*gpt", re.I)
+
+
+def is_generic_kind(kind):
+    return not kind or kind == "?" or bool(GENERIC_KIND.match(str(kind)))
+
+
+def join_kind(kind, name=None):
+    """The kind join registers: tidied, and taken from where join runs when the agent's own kind is vague:
+    - "ChatGPT" when the name or kind says ChatGPT (ChatGPT's Work -> Local runs on the Codex engine and its shell
+      likely carries CODEX_THREAD_ID too, so this wins over the Codex rule);
+    - "Codex" for a generic kind ("Agent", "AI coding agent", "WHAT YOU ARE", empty) inside Codex (CODEX_THREAD_ID);
+    - "Claude Code" when join runs inside Claude Code (CLAUDECODE=1) and the agent said just "Claude" or "Agent"."""
     k = tidy_kind(kind)
+    generic = k == "Agent" or is_generic_kind(kind)
+    if k == "ChatGPT" or ((generic or k == "Codex") and (CHATGPT.search(str(name or "")) or CHATGPT.search(str(kind or "")))):
+        return "ChatGPT"
+    if generic and os.environ.get("CODEX_THREAD_ID"):
+        return "Codex"
     if k in ("Claude", "Agent") and os.environ.get("CLAUDECODE") == "1":
         return "Claude Code"
     return k
@@ -194,7 +220,7 @@ def is_claude_code(kind):
 
 def forget(slug, c=None):
     """This agent is gone (left, removed by the owner, or unknown to the server): delete its keys, then its
-    Claude Code skill entry and its answer-on-its-own service. Never raises."""
+    skill-file entry (Claude Code, Codex, ChatGPT) and its answer-on-its-own service. Never raises."""
     c = c or {}
     if service.inside():
         import sys
@@ -204,8 +230,8 @@ def forget(slug, c=None):
         profiles.delete(slug)
         profiles.delete_locks(slug)
     finally:
-        if c.get("claude_skill"):
-            claude_skill.sync(c["claude_skill"], cmd_prefix())
+        if claude_skill.path_of(c):
+            claude_skill.sync(claude_skill.path_of(c), cmd_prefix())
         service.forget_log(slug)
         service.remove(slug)  # last: inside the service this also ends this process
 
@@ -229,6 +255,26 @@ def prune_dead(host=None, timeout=6):
     return gone
 
 
+def check_home():
+    """Before any server call: can this computer save the new agent's keys? A join that redeems the invite and then
+    can't write SWITCHBOARD_HOME leaves a half-made agent on the dashboard and a used-up invite (seen in Codex's
+    sandbox with network allowed). Raises SwitchboardError with a plain line; the invite stays unused."""
+    h = profiles.home()
+    try:
+        profiles._ensure_dirs()
+        probe = os.path.join(profiles.agents_dir(), ".write-check-%d" % os.getpid())
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.close(fd)
+        os.remove(probe)
+    except OSError as e:
+        shown = h.replace(os.path.expanduser("~"), "~", 1) if h.startswith(os.path.expanduser("~")) else h
+        if os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") == "1":
+            raise SwitchboardError(CODEX_NO_NET, "sandbox")
+        if os.environ.get("CODEX_SANDBOX"):
+            raise SwitchboardError(CODEX_NO_WRITE % shown, "sandbox")
+        raise SwitchboardError(NO_WRITE % (shown, e.strerror or e), "home_not_writable")
+
+
 def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=None, via=None, timeout=40):
     """Register a new agent and save its profile. Replaces only a dead profile with the same host,
     network and name (see profiles.dead_same_name); never touches other agents' profiles.
@@ -237,7 +283,8 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=
     A Claude Code agent also gets its skill file (see claude_skill). A failed hello never fails the join.
     mcp_app: the app extension (e.g. "claude-desktop") this agent belongs to; its kind is taken as given.
     via: how it joined, saved in the profile ("bundle" = the invite baked into an extension download)."""
-    kind = tidy_kind(kind) if mcp_app else join_kind(kind)
+    kind = tidy_kind(kind) if mcp_app else join_kind(kind, name)
+    check_home()  # first: a home it can't write must not use up the invite
     profiles.migrate_legacy()  # so a legacy identity is preserved before we add another
     link = (code or "").strip()
     if not host and link.startswith(("https://", "http://localhost:", "http://127.0.0.1:")) and "/j/" in link:
@@ -253,6 +300,8 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=
         if str(e) == "Missing or invalid public key.":  # a server from before 0.4
             raise SwitchboardError(OLD_SERVER)
         if e.code == "unreachable":
+            if os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") == "1":
+                raise SwitchboardError(CODEX_NO_NET, e.code)
             h = host.split("://")[-1]
             raise SwitchboardError(BLOCKED_JOIN % (h, claude_link(host, code)), e.code)
         raise
@@ -269,14 +318,15 @@ def join(code, name, kind="Agent", host=None, mcp_as=None, hello=False, mcp_app=
     with profiles.locked("join"):
         dead = profiles.dead_same_name(host, profiles.network_of(p), r["name"])
         if dead:
-            old_skill = profiles._read_json(profiles.path_for(dead), {}).get("claude_skill")
+            old_skill = claude_skill.path_of(profiles._read_json(profiles.path_for(dead), {}))
             profiles.delete(dead)  # its agent is gone; reuse the file name so --as keeps working
             service.remove(dead)   # never let a dead agent's auto-answer service serve the new one
             p["slug"] = dead
             p["replaced"] = True
         else:
             p["slug"] = profiles.new_slug(r["name"])
-        skill = claude_skill.claim(p) if is_claude_code(kind) and r.get("approved", True) else None
+        app = claude_skill.app_for(kind)
+        skill = claude_skill.claim(p, app) if app and r.get("approved", True) else None
         profiles.save(p)
     if skill:
         claude_skill.sync(skill, cmd_prefix())
@@ -325,20 +375,30 @@ def grok_next(r):
     ]
 
 
+NEXT_KINDS = ("Claude Code", "Codex", "ChatGPT")  # kinds whose join prints a one-line-reply NEXT block
+
+
+def has_next(kind):
+    return kind in NEXT_KINDS
+
+
 def cc_next(r):
-    """A Claude Code agent's whole setup turn: one exact line, then stop (one turn, no extra inbox check).
-    The reply line comes last, and the usual reason to add more (explaining how to message later) is
-    answered first: the commands are saved in the switchboard skill (or, if the user has their own
-    skill there, on the line above)."""
+    """A Claude Code, Codex or ChatGPT agent's whole setup turn: one exact line, then stop (one turn, no extra
+    inbox check, no hello). The reply line comes last, and the usual reason to add more (explaining how to
+    message later) is answered first: the commands are saved in the switchboard skill (or, if the user has
+    their own skill there, on the line above), followed by the one safe way to uninstall."""
     who = str(r.get("as") or r["name"]).replace("'", "")
     name = clean(r["name"])
+    kind = r.get("kind") if has_next(r.get("kind")) else "Claude Code"
     later = ("Saved for later sessions: your switchboard skill has the commands (--as '%s')." % who if r.get("skill")
              else "For later: %s ask|send|inbox --as '%s'" % (cmd_prefix(), who))
+    stop = "" if kind == "Claude Code" else " Don't message anyone or run anything else."
     return [
         later,
+        claude_skill.uninstall_line(cmd_prefix(), "'%s'" % who),
         "",
-        "NEXT (Claude Code): setup is done. Your whole reply to your user is exactly this one line, "
-        "with nothing before or after it, then stop:",
+        "NEXT (%s): setup is done.%s Your whole reply to your user is exactly this one line, "
+        "with nothing before or after it, then stop:" % (kind, stop),
         "Connected to your Switchboard as %s." % name,
     ]
 
