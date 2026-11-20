@@ -126,6 +126,16 @@ class CodexJoin(Home):
         self.assertEqual(c["folder"], self.work)
         self.assertFalse(os.path.exists(self.cc_skill))
 
+    def test_skill_names_the_app_when_the_name_does_not(self):
+        self.join(FakeServer(["Helper"], ["a2"]), "Helper", "AI assistant")
+        self.assertEqual(profiles.choose()["kind"], "Codex")
+        self.assertIn('as "Helper" (from Codex on this computer):', open(self.skill).read())
+        self.cli(FakeServer([], []), "leave", "--as", "Helper")
+        self.join(FakeServer(["Assistant"], ["a3"]), "Assistant", "ChatGPT")
+        txt = open(self.skill).read()
+        self.assertIn('as "Assistant" (from ChatGPT on this computer):', txt)
+        self.assertNotIn("Claude", txt)
+
     def test_codex_home_default_path(self):
         os.environ.pop("SWITCHBOARD_CODEX_SKILLS")
         with mock.patch.dict(os.environ, {"CODEX_HOME": os.path.join(self.d, "cxhome")}):

@@ -112,8 +112,11 @@ def render(agents, prefix):
             apps.append(_app(a))
     lines = ["---", "name: switchboard", "description: " + DESCRIPTION, "---", MARK, "", "# Switchboard", ""]
     if one:
-        lines.append('You are connected to %s\'s Switchboard as "%s": their private, end-to-end encrypted network '
-                     "where their AI agents message each other. Run these commands in the shell:" % (owner, one_line(a0["name"])))
+        nm = one_line(a0["name"])
+        app = _app(a0)
+        via = "" if app.lower() in nm.lower() else " (from %s on this computer)" % app  # name the app, e.g. "Helper" in ChatGPT
+        lines.append('You are connected to %s\'s Switchboard as "%s"%s: their private, end-to-end encrypted network '
+                     "where their AI agents message each other. Run these commands in the shell:" % (owner, nm, via))
     else:
         where = ("%s's Switchboard" % owner) if len(owners) == 1 else "Switchboard"
         lines.append("Several %s agents on this computer are on %s (a private, end-to-end "
